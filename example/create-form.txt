@@ -1,0 +1,61 @@
+┃ Title
+┃ Brief summary of the issue (required)
+┃ > e.g., Fix authentication bug in login handler
+
+  Description
+  Detailed context about the issue
+  Explain why this issue exists and what needs to be done...
+
+
+  Type
+  Categorize the kind of work
+  > Task
+    Bug
+    Feature
+    Epic
+    Chore
+
+  Priority
+  Set urgency level
+  > P0 - Critical
+    P1 - High
+    P2 - Medium (default)
+    P3 - Low
+    P4 - Backlog
+
+  Assignee
+  Who should work on this? (optional)
+  > username or email
+
+  Labels
+  Comma-separated tags (optional)
+  > e.g., urgent, backend, needs-review
+
+  External Reference
+  Link to external tracker (optional)
+  > e.g., gh-123, jira-ABC-456
+
+  Design Notes
+  Technical approach or design details (optional)
+  Describe the implementation approach...
+ 
+
+  Acceptance Criteria
+  How do we know this is done? (optional)
+  List the criteria for completion...
+
+  Dependencies
+  Format: type:id or just id (optional)
+  > e.g., discovered-from:bd-20, blocks:bd-15
+
+  Create this issue?
+
+    Create     Cancel
+
+---
+
+✓ Created issue: beads-ui-beb — Create UI for `bd create-form`
+  Type:     task
+  Priority: P2
+  Status:   open
+  Description: Rather than being limited to CLI, I want a proper Mac app for creating issues for beads
