@@ -2,7 +2,7 @@
 
 A native macOS app for creating and viewing issues in the [beads](https://steveyegge.github.io/beads/) (`bd`) issue tracking system — no CLI required.
 
-![BeadsUI icon](BeadsUI.svg)
+<img src="BeadsUI.svg" alt="BeadsUI icon" width="96"/>
 
 ---
 
