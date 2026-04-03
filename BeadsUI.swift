@@ -634,3 +634,70 @@ struct IssueRow: View {
         }
     }
 }
+
+// MARK: - Issue Detail Sheet
+
+struct IssueDetailSheet: View {
+    let issue: BeadsIssue
+    let workingDirectory: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var output    = ""
+    @State private var isLoading = true
+    @State private var error: String? = nil
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(issue.id)
+                    .font(.system(.headline, design: .monospaced))
+                Text("–")
+                Text(issue.title)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Spacer()
+                Button("Close") { dismiss() }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .padding()
+            .background(.bar)
+            Divider()
+            if isLoading {
+                ProgressView("Loading…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let err = error {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 32)).foregroundStyle(.orange)
+                    Text(err).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+                .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    Text(output)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding()
+                }
+            }
+        }
+        .frame(minWidth: 560, minHeight: 440)
+        .task { await loadDetail() }
+    }
+
+    private func loadDetail() async {
+        let dir = workingDirectory
+        let id  = issue.id
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.show(id: id, workingDirectory: dir)
+            }.value
+            output = result
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoading = false
+    }
+}
