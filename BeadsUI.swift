@@ -116,6 +116,27 @@ enum BeadsRunner {
         return parseIssues(from: stdout)
     }
 
+    // MARK: Show
+
+    static func show(id: String, workingDirectory: String) throws -> String {
+        let (stdout, stderr, status) = try run(["bd", "show", id], in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
+        }
+        return stdout
+    }
+
+    // MARK: Close
+
+    static func close(id: String, workingDirectory: String) throws {
+        let (stdout, stderr, status) = try run(["bd", "close", id], in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
+        }
+    }
+
     // MARK: Parse
 
     private static func parseIssues(from output: String) -> [BeadsIssue] {
@@ -442,6 +463,7 @@ struct IssueListView: View {
     @State private var isLoading     = false
     @State private var errorMessage: String? = nil
     @State private var copiedID:     String? = nil
+    @State private var detailIssue:  BeadsIssue? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -451,6 +473,9 @@ struct IssueListView: View {
         }
         .task { await loadIssues() }
         .onChange(of: workingDirectory) { _ in Task { await loadIssues() } }
+        .sheet(item: $detailIssue) { issue in
+            IssueDetailSheet(issue: issue, workingDirectory: workingDirectory)
+        }
     }
 
     private var listToolbar: some View {
@@ -496,7 +521,9 @@ struct IssueListView: View {
                        message: "This repository has no open issues.")
         } else {
             List(issues) { issue in
-                IssueRow(issue: issue, copiedID: $copiedID)
+                IssueRow(issue: issue, copiedID: $copiedID,
+                         onShowDetail: { detailIssue = issue },
+                         onClose: { Task { await closeIssue(issue) } })
             }
             .listStyle(.plain)
         }
@@ -510,6 +537,18 @@ struct IssueListView: View {
                 .multilineTextAlignment(.center).frame(maxWidth: 300)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func closeIssue(_ issue: BeadsIssue) async {
+        let dir = workingDirectory
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.close(id: issue.id, workingDirectory: dir)
+            }.value
+            await loadIssues()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func loadIssues() async {
@@ -533,6 +572,8 @@ struct IssueListView: View {
 struct IssueRow: View {
     let issue: BeadsIssue
     @Binding var copiedID: String?
+    var onShowDetail: () -> Void = {}
+    var onClose: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 10) {
@@ -556,8 +597,14 @@ struct IssueRow: View {
             }
         }
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { onShowDetail() }
         .onTapGesture { copyID() }
-        .help("Click to copy \(issue.id) to clipboard")
+        .contextMenu {
+            Button("View Detail") { onShowDetail() }
+            Divider()
+            Button("Close Issue") { onClose() }
+        }
+        .help("Click to copy ID · Double-click to view detail")
         .padding(.vertical, 2)
     }
 
