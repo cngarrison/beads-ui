@@ -108,7 +108,7 @@ enum BeadsRunner {
     // MARK: List
 
     static func list(workingDirectory: String) throws -> [BeadsIssue] {
-        let (stdout, stderr, status) = try run(["bd", "list", "--flat"], in: workingDirectory)
+        let (stdout, stderr, status) = try run(["bd", "list", "--flat", "--limit", "0"], in: workingDirectory)
         if status != 0 {
             let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
@@ -173,8 +173,11 @@ enum BeadsRunner {
 
     private static func run(_ args: [String], in directory: String) throws -> (String, String, Int32) {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = args
+        // Use a login shell so GUI-launched apps (Dock, Finder) inherit the
+        // user's full PATH (e.g. /usr/local/bin where `bd` typically lives).
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        let cmd = args.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''" ) + "'" }.joined(separator: " ")
+        p.arguments = ["-l", "-c", cmd]
         if !directory.isEmpty { p.currentDirectoryURL = URL(fileURLWithPath: directory) }
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
@@ -191,7 +194,22 @@ enum BeadsRunner {
 
 struct ContentView: View {
     @AppStorage("workingDirectory") private var workingDirectory: String = ""
+    @AppStorage("recentProjects") private var recentProjectsJSON: String = "[]"
     @State private var currentTab: AppTab = .create
+
+    private var recentProjects: [String] {
+        (try? JSONDecoder().decode([String].self, from: Data(recentProjectsJSON.utf8))) ?? []
+    }
+
+    private func addToRecents(_ path: String) {
+        var list = recentProjects
+        list.removeAll { $0 == path }
+        list.insert(path, at: 0)
+        if list.count > 10 { list = Array(list.prefix(10)) }
+        recentProjectsJSON = (try? String(data: JSONEncoder().encode(list), encoding: .utf8)) ?? "[]"
+    }
+
+    private func clearRecents() { recentProjectsJSON = "[]" }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -205,6 +223,9 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 520, minHeight: 560)
+        .onAppear {
+            if !workingDirectory.isEmpty { addToRecents(workingDirectory) }
+        }
     }
 
     private var topBar: some View {
@@ -219,6 +240,18 @@ struct ContentView: View {
             Spacer()
 
             Image(systemName: "folder").foregroundStyle(.secondary)
+            projectSelector
+            Button("Choose\u{2026}") { pickWorkingDirectory() }
+                .buttonStyle(.bordered).controlSize(.small)
+        }
+        .padding(.horizontal).padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private var projectSelector: some View {
+        let recents = recentProjects
+        if recents.isEmpty {
             if workingDirectory.isEmpty {
                 Text("No repository selected")
                     .foregroundStyle(.secondary).italic().font(.subheadline)
@@ -227,11 +260,34 @@ struct ContentView: View {
                     .font(.subheadline).lineLimit(1)
                     .help(workingDirectory)
             }
-            Button("Choose\u{2026}") { pickWorkingDirectory() }
-                .buttonStyle(.bordered).controlSize(.small)
+        } else {
+            Menu {
+                ForEach(recents, id: \.self) { path in
+                    Button {
+                        workingDirectory = path
+                    } label: {
+                        if path == workingDirectory {
+                            Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "checkmark")
+                        } else {
+                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                        }
+                    }
+                    .help(path)
+                }
+                Divider()
+                Button("Clear Recents") { clearRecents() }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(workingDirectory.isEmpty ? "No repository" :
+                         URL(fileURLWithPath: workingDirectory).lastPathComponent)
+                        .font(.subheadline)
+                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(workingDirectory)
         }
-        .padding(.horizontal).padding(.vertical, 8)
-        .background(.bar)
     }
 
     private func pickWorkingDirectory() {
@@ -244,6 +300,7 @@ struct ContentView: View {
         }
         if panel.runModal() == .OK, let url = panel.url {
             workingDirectory = url.path
+            addToRecents(url.path)
         }
     }
 }
