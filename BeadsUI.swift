@@ -60,10 +60,34 @@ enum BeadsError: LocalizedError {
 
 struct BeadsIssue: Identifiable {
     let id: String
-    let statusSymbol: String
-    let statusColor: Color
-    let priority: String
     let title: String
+    let status: String       // "open", "in_progress", "closed", "deferred", "blocked"
+    let priority: Int        // 0–4
+    let issueType: String?   // "task", "bug", "feature", etc.
+    let parentID: String?
+    var children: [BeadsIssue]?   // nil = leaf node
+
+    var statusSymbol: String {
+        switch status {
+        case "open":        return "\u{25CB}"  // ○
+        case "in_progress": return "\u{25D0}"  // ◐
+        case "closed":      return "\u{2713}"  // ✓
+        case "deferred":    return "\u{2744}"  // ❄
+        default:            return "\u{25CF}"  // ● blocked/unknown
+        }
+    }
+
+    var statusColor: Color {
+        switch status {
+        case "open":        return .primary
+        case "in_progress": return .blue
+        case "closed":      return .green
+        case "deferred":    return .purple
+        default:            return .orange
+        }
+    }
+
+    var priorityLabel: String { "P\(priority)" }
 }
 
 // MARK: - Beads Runner
@@ -108,12 +132,12 @@ enum BeadsRunner {
     // MARK: List
 
     static func list(workingDirectory: String) throws -> [BeadsIssue] {
-        let (stdout, stderr, status) = try run(["bd", "list", "--flat", "--limit", "0"], in: workingDirectory)
+        let (stdout, stderr, status) = try run(["bd", "list", "--json", "--limit", "0"], in: workingDirectory)
         if status != 0 {
             let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
         }
-        return parseIssues(from: stdout)
+        return try buildTree(from: stdout)
     }
 
     // MARK: Show
@@ -137,36 +161,49 @@ enum BeadsRunner {
         }
     }
 
-    // MARK: Parse
+    // MARK: Parse (JSON → tree)
 
-    private static func parseIssues(from output: String) -> [BeadsIssue] {
-        // Line format: <status> <id> [<sym> <priority>] [<type>] - <title>
-        // e.g.:        ○ beads-ui-beb [● P2] [task] - Add icon for the app
-        let pattern = "^(\\S)\\s+(\\S+)\\s+\\[\\S+\\s+(P\\d)\\]\\s+\\[\\S+\\]\\s+-\\s+(.+)$"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        return output.components(separatedBy: .newlines).compactMap { line in
-            let t = line.trimmingCharacters(in: .whitespaces)
-            let ns = NSRange(t.startIndex..., in: t)
-            guard let m = regex.firstMatch(in: t, range: ns),
-                  let r1 = Range(m.range(at: 1), in: t),
-                  let r2 = Range(m.range(at: 2), in: t),
-                  let r3 = Range(m.range(at: 3), in: t),
-                  let r4 = Range(m.range(at: 4), in: t) else { return nil }
-            let sym = String(t[r1])
-            let color: Color = {
-                switch sym {
-                case "\u{25CB}": return .primary   // ○ open
-                case "\u{25D0}": return .blue       // ◐ in_progress
-                case "\u{2713}": return .green      // ✓ closed
-                case "\u{2744}": return .purple     // ❄ deferred
-                default:         return .orange     // ● blocked + unknown
-                }
-            }()
-            return BeadsIssue(
-                id: String(t[r2]), statusSymbol: sym, statusColor: color,
-                priority: String(t[r3]), title: String(t[r4])
-            )
+    private static func buildTree(from json: String) throws -> [BeadsIssue] {
+        struct RawIssue: Decodable {
+            let id: String
+            let title: String
+            let status: String
+            let priority: Int
+            let issueType: String?
+            let parent: String?
+            enum CodingKeys: String, CodingKey {
+                case id, title, status, priority, parent
+                case issueType = "issue_type"
+            }
         }
+
+        let raw = try JSONDecoder().decode([RawIssue].self, from: Data(json.utf8))
+
+        // Build flat map and child index
+        var nodeMap: [String: BeadsIssue] = [:]
+        var childIndex: [String: [String]] = [:]   // parentID → [childID]
+        for r in raw {
+            nodeMap[r.id] = BeadsIssue(id: r.id, title: r.title, status: r.status,
+                                       priority: r.priority, issueType: r.issueType,
+                                       parentID: r.parent, children: nil)
+            if let p = r.parent { childIndex[p, default: []].append(r.id) }
+        }
+
+        // Recursively attach children
+        func build(_ id: String) -> BeadsIssue? {
+            guard var node = nodeMap[id] else { return nil }
+            let kids = childIndex[id] ?? []
+            if !kids.isEmpty { node.children = kids.compactMap { build($0) } }
+            return node
+        }
+
+        // Roots: no parent, or parent not present in this result set
+        let rootIDs = raw.filter { r in
+            guard let p = r.parent else { return true }
+            return nodeMap[p] == nil   // orphan → promote to root
+        }.map { $0.id }
+
+        return rootIDs.compactMap { build($0) }
     }
 
     // MARK: Process helper
@@ -529,7 +566,7 @@ struct IssueListView: View {
             listContent
         }
         .task { await loadIssues() }
-        .onChange(of: workingDirectory) { _ in Task { await loadIssues() } }
+        .onChange(of: workingDirectory) { newDir in Task { await loadIssues(dir: newDir) } }
         .sheet(item: $detailIssue) { issue in
             IssueDetailSheet(issue: issue, workingDirectory: workingDirectory)
         }
@@ -577,7 +614,7 @@ struct IssueListView: View {
                        title: "No Issues",
                        message: "This repository has no open issues.")
         } else {
-            List(issues) { issue in
+            List(issues, children: \.children) { issue in
                 IssueRow(issue: issue, copiedID: $copiedID,
                          onShowDetail: { detailIssue = issue },
                          onClose: { Task { await closeIssue(issue) } })
@@ -608,10 +645,10 @@ struct IssueListView: View {
         }
     }
 
-    private func loadIssues() async {
-        guard !workingDirectory.isEmpty else { return }
+    private func loadIssues(dir explicitDir: String? = nil) async {
+        let dir = explicitDir ?? workingDirectory
+        guard !dir.isEmpty else { return }
         isLoading = true; errorMessage = nil
-        let dir = workingDirectory
         do {
             let result = try await Task.detached(priority: .userInitiated) {
                 try BeadsRunner.list(workingDirectory: dir)
@@ -643,7 +680,7 @@ struct IssueRow: View {
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 120, alignment: .leading)
 
-            priorityBadge(issue.priority)
+            priorityBadge(issue.priorityLabel)
 
             Text(issue.title).lineLimit(1)
 
