@@ -103,10 +103,23 @@ struct BeadsIssueDetail: Decodable {
     let assignee: String?             // JSON key "assignee" (display name)
     let owner: String?                // email address
     let labels: [String]?             // JSON key "labels"
+    let notes: String?
+    let comments: [BeadsComment]?
     enum CodingKeys: String, CodingKey {
-        case id, title, description, design, status, owner, assignee, labels
+        case id, title, description, design, status, owner, assignee, labels, notes, comments
         case priority, issueType = "issue_type"
         case acceptanceCriteria = "acceptance_criteria"
+    }
+}
+
+struct BeadsComment: Decodable, Identifiable {
+    let id: String
+    let author: String
+    let text: String
+    let createdAt: String
+    enum CodingKeys: String, CodingKey {
+        case id, author, text
+        case createdAt = "created_at"
     }
 }
 
@@ -122,6 +135,7 @@ struct IssueFormFields {
     var designNotes        = ""
     var acceptanceCriteria = ""
     var dependencies       = ""
+    var notes              = ""
 
     static func from(_ detail: BeadsIssueDetail) -> IssueFormFields {
         var f = IssueFormFields()
@@ -131,6 +145,7 @@ struct IssueFormFields {
         f.acceptanceCriteria = detail.acceptanceCriteria ?? ""
         f.assignee           = detail.assignee ?? detail.owner ?? ""  // prefer display name
         f.labels             = detail.labels?.joined(separator: ", ") ?? ""
+        f.notes              = detail.notes ?? ""
         if let t = detail.issueType, let it = IssueType(rawValue: t) { f.issueType = it }
         if let p = Priority(rawValue: String(detail.priority))        { f.priority  = p }
         return f
@@ -229,6 +244,8 @@ enum BeadsRunner {
         if !fields.designNotes.isEmpty { args += ["--design",      fields.designNotes] }
         // Acceptance criteria — only pass when non-empty (same safety policy as other optional fields)
         if !fields.acceptanceCriteria.isEmpty { args += ["--acceptance", fields.acceptanceCriteria] }
+        // Notes — only pass when non-empty
+        if !fields.notes.isEmpty { args += ["--notes", fields.notes] }
         // Labels — split on comma, trim whitespace, pass each with --set-labels
         // Only pass when non-empty to avoid accidentally clearing labels
         if !fields.labels.isEmpty {
@@ -244,6 +261,16 @@ enum BeadsRunner {
         if status != 0 {
             let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw BeadsError.commandFailed(msg.isEmpty ? stdout.trimmingCharacters(in: .whitespacesAndNewlines) : msg)
+        }
+    }
+
+    // MARK: Add Comment
+
+    static func addComment(id: String, text: String, workingDirectory: String) throws {
+        let (stdout, stderr, status) = try run(["bd", "comments", "add", id, text], in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
         }
     }
 
@@ -931,6 +958,10 @@ struct IssueEditSheet: View {
     @State private var isLoading = true
     @State private var isSaving  = false
     @State private var error: String? = nil
+    @State private var comments: [BeadsComment] = []
+    @State private var newCommentText: String = ""
+    @State private var isAddingComment = false
+    @State private var commentError: String? = nil
 
     private var canSave: Bool {
         !fields.title.trimmingCharacters(in: .whitespaces).isEmpty && !isSaving
@@ -965,7 +996,53 @@ struct IssueEditSheet: View {
                 .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    IssueFormContent(fields: $fields).padding()
+                    VStack(alignment: .leading, spacing: 0) {
+                        IssueFormContent(fields: $fields).padding()
+
+                        Divider()
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Notes").font(.subheadline).fontWeight(.medium)
+                            formTextArea($fields.notes, placeholder: "Add notes…", height: 80)
+                            Text("Notes are saved along with other fields when you click Save.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal).padding(.top, 8)
+
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Comments").font(.subheadline).fontWeight(.medium)
+
+                            if comments.isEmpty {
+                                Text("No comments yet.").foregroundStyle(.secondary).font(.subheadline)
+                            } else {
+                                ForEach(comments) { comment in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack {
+                                            Text(comment.author).fontWeight(.medium).font(.subheadline)
+                                            Spacer()
+                                            Text(comment.createdAt).font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Text(comment.text).font(.body).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .padding(8)
+                                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                                }
+                            }
+
+                            if let err = commentError {
+                                Text(err).foregroundStyle(.red).font(.caption)
+                            }
+                            HStack(alignment: .bottom, spacing: 8) {
+                                formTextArea($newCommentText, placeholder: "Add a comment…", height: 60)
+                                Button(isAddingComment ? "Adding…" : "Add") {
+                                    Task { await addComment() }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(newCommentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isAddingComment)
+                            }
+                        }
+                        .padding(.horizontal).padding(.vertical, 8)
+                    }
                 }
             }
 
@@ -998,10 +1075,34 @@ struct IssueEditSheet: View {
                 try BeadsRunner.showDetail(id: id, workingDirectory: dir)
             }.value
             fields = IssueFormFields.from(detail)
+            comments = detail.comments ?? []
         } catch {
             self.error = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func addComment() async {
+        let text = newCommentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        isAddingComment = true
+        commentError = nil
+        let dir = workingDirectory
+        let id = issue.id
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.addComment(id: id, text: text, workingDirectory: dir)
+            }.value
+            // Reload to get updated comments list
+            let detail = try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.showDetail(id: id, workingDirectory: dir)
+            }.value
+            comments = detail.comments ?? []
+            newCommentText = ""
+        } catch {
+            commentError = error.localizedDescription
+        }
+        isAddingComment = false
     }
 
     private func saveIssue() {
