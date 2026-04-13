@@ -213,9 +213,63 @@ enum BeadsRunner {
 
     // MARK: List
 
-    static func list(workingDirectory: String) throws -> [BeadsIssue] {
-        let (stdout, stderr, status) = try run(["bd", "list", "--json", "--limit", "0"], in: workingDirectory)
-        if status != 0 {
+    /// Returns a progress stream (running issue count) and a background task resolving to the full issue tree.
+    /// Consume the stream on the main actor to update UI, then await the task for the final result.
+    static func listWithProgress(workingDirectory: String) -> (AsyncStream<Int>, Task<[BeadsIssue], Error>) {
+        let (stream, continuation) = AsyncStream<Int>.makeStream()
+        let bgTask = Task.detached(priority: .userInitiated) {
+            defer { continuation.finish() }
+            return try BeadsRunner.listInternal(workingDirectory: workingDirectory) { count in
+                continuation.yield(count)
+            }
+        }
+        return (stream, bgTask)
+    }
+
+    private static func listInternal(workingDirectory: String, onProgress: @escaping (Int) -> Void) throws -> [BeadsIssue] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-l", "-c", "bd list --json --limit 0"]
+        if !workingDirectory.isEmpty { p.currentDirectoryURL = URL(fileURLWithPath: workingDirectory) }
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError  = err
+
+        // Read stdout in chunks via readabilityHandler, counting issue objects as they arrive.
+        // Each issue in `bd list --json` output has exactly one top-level "id": key.
+        var stdoutData = Data()
+        var issueCount = 0
+        let stdoutDone = DispatchSemaphore(value: 0)
+        out.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                stdoutDone.signal()
+                return
+            }
+            stdoutData.append(chunk)
+            if let s = String(data: chunk, encoding: .utf8) {
+                let delta = s.components(separatedBy: "\"id\":").count - 1
+                if delta > 0 { issueCount += delta; onProgress(issueCount) }
+            }
+        }
+
+        // Read stderr concurrently to prevent pipe-buffer deadlock.
+        var stderrData = Data()
+        let stderrDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            stderrData = err.fileHandleForReading.readDataToEndOfFile()
+            stderrDone.signal()
+        }
+
+        try p.run()
+        stdoutDone.wait()
+        p.waitUntilExit()
+        stderrDone.wait()
+
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        if p.terminationStatus != 0 {
             let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
         }
@@ -747,6 +801,7 @@ struct IssueListView: View {
 
     @State private var issues:       [BeadsIssue] = []
     @State private var isLoading     = false
+    @State private var loadingCount  = 0
     @State private var errorMessage: String? = nil
     @State private var copiedID:     String? = nil
     @State private var detailIssue:  BeadsIssue? = nil
@@ -800,7 +855,8 @@ struct IssueListView: View {
         } else if isLoading {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Loading issues\u{2026}").foregroundStyle(.secondary).font(.subheadline)
+                Text(loadingCount > 0 ? "Loading issues\u{2026} (\(loadingCount) found)" : "Loading issues\u{2026}")
+                    .foregroundStyle(.secondary).font(.subheadline)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = errorMessage {
@@ -854,12 +910,11 @@ struct IssueListView: View {
     private func loadIssues(dir explicitDir: String? = nil) async {
         let dir = explicitDir ?? workingDirectory
         guard !dir.isEmpty else { return }
-        isLoading = true; errorMessage = nil
+        isLoading = true; loadingCount = 0; errorMessage = nil
+        let (progressStream, bgTask) = BeadsRunner.listWithProgress(workingDirectory: dir)
+        for await count in progressStream { loadingCount = count }
         do {
-            let result = try await Task.detached(priority: .userInitiated) {
-                try BeadsRunner.list(workingDirectory: dir)
-            }.value
-            issues = result
+            issues = try await bgTask.value
         } catch {
             errorMessage = error.localizedDescription
         }
