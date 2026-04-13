@@ -107,10 +107,23 @@ struct BeadsIssueDetail: Decodable {
     let labels: [String]?             // JSON key "labels"
     let notes: String?
     let comments: [BeadsComment]?
+    let dependencies: [BeadsDependency]?
     enum CodingKeys: String, CodingKey {
-        case id, title, description, design, status, owner, assignee, labels, notes, comments
+        case id, title, description, design, status, owner, assignee, labels, notes, comments, dependencies
         case priority, issueType = "issue_type"
         case acceptanceCriteria = "acceptance_criteria"
+    }
+}
+
+struct BeadsDependency: Decodable, Identifiable {
+    let id: String
+    let title: String
+    let status: String
+    let priority: Int
+    let dependencyType: String?   // "blocks", "blocked-by", "discovered-from", etc.
+    enum CodingKeys: String, CodingKey {
+        case id, title, status, priority
+        case dependencyType = "dependency_type"
     }
 }
 
@@ -270,6 +283,28 @@ enum BeadsRunner {
 
     static func addComment(id: String, text: String, workingDirectory: String) throws {
         let (stdout, stderr, status) = try run(["bd", "comments", "add", id, text], in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
+        }
+    }
+
+    // MARK: Add Dependency
+
+    static func addDependency(issueID: String, depID: String, type depType: String, workingDirectory: String) throws {
+        var args = ["bd", "link", issueID, depID]
+        if !depType.isEmpty && depType != "blocks" { args += ["--type", depType] }
+        let (stdout, stderr, status) = try run(args, in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
+        }
+    }
+
+    // MARK: Remove Dependency
+
+    static func removeDependency(issueID: String, depID: String, workingDirectory: String) throws {
+        let (stdout, stderr, status) = try run(["bd", "dep", "remove", issueID, depID], in: workingDirectory)
         if status != 0 {
             let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
@@ -520,6 +555,7 @@ func formTextArea(
 /// Contains all input fields; does NOT include banners, ScrollView, or bottom bar.
 struct IssueFormContent: View {
     @Binding var fields: IssueFormFields
+    var showDependencies: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -556,8 +592,10 @@ struct IssueFormContent: View {
                 formField("External Reference") {
                     TextField("gh-123, jira-ABC-456", text: $fields.externalRef).textFieldStyle(.roundedBorder)
                 }
-                formField("Dependencies") {
-                    TextField("discovered-from:bd-20, blocks:bd-15", text: $fields.dependencies).textFieldStyle(.roundedBorder)
+                if showDependencies {
+                    formField("Dependencies") {
+                        TextField("discovered-from:bd-20, blocks:bd-15", text: $fields.dependencies).textFieldStyle(.roundedBorder)
+                    }
                 }
             }
             formField("Design Notes") {
@@ -975,9 +1013,14 @@ struct IssueEditSheet: View {
     @State private var isSaving  = false
     @State private var error: String? = nil
     @State private var comments: [BeadsComment] = []
+    @State private var dependencies: [BeadsDependency] = []
     @State private var newCommentText: String = ""
     @State private var isAddingComment = false
     @State private var commentError: String? = nil
+    @State private var newDepID: String = ""
+    @State private var newDepType: String = "blocks"
+    @State private var isAddingDep = false
+    @State private var depError: String? = nil
 
     private var canSave: Bool {
         !fields.title.trimmingCharacters(in: .whitespaces).isEmpty && !isSaving
@@ -1013,7 +1056,63 @@ struct IssueEditSheet: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        IssueFormContent(fields: $fields).padding()
+                        IssueFormContent(fields: $fields, showDependencies: false).padding()
+
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Dependencies").font(.subheadline).fontWeight(.medium)
+
+                            if dependencies.isEmpty {
+                                Text("No dependencies.").foregroundStyle(.secondary).font(.subheadline)
+                            } else {
+                                ForEach(dependencies) { dep in
+                                    HStack(spacing: 6) {
+                                        Text(dep.dependencyType ?? "depends-on")
+                                            .font(.caption2).fontWeight(.semibold)
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(Color.teal, in: Capsule())
+                                        Text(dep.id)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                        Text(dep.title).font(.subheadline).lineLimit(1)
+                                        Spacer()
+                                        Text("P\(dep.priority)").font(.caption2).foregroundStyle(.secondary)
+                                        Button { Task { await removeDep(dep) } } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Remove this dependency")
+                                    }
+                                }
+                            }
+
+                            if let err = depError {
+                                Text(err).foregroundStyle(.red).font(.caption)
+                            }
+
+                            HStack(spacing: 6) {
+                                TextField("Issue ID", text: $newDepID)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 140)
+                                Picker("", selection: $newDepType) {
+                                    Text("blocks").tag("blocks")
+                                    Text("tracks").tag("tracks")
+                                    Text("related").tag("related")
+                                    Text("parent-child").tag("parent-child")
+                                    Text("discovered-from").tag("discovered-from")
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 160)
+                                Button(isAddingDep ? "Adding\u{2026}" : "Add") {
+                                    Task { await addDep() }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(newDepID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isAddingDep)
+                            }
+                        }
+                        .padding(.horizontal).padding(.top, 8)
 
                         Divider()
                         VStack(alignment: .leading, spacing: 6) {
@@ -1093,6 +1192,7 @@ struct IssueEditSheet: View {
             }.value
             fields = IssueFormFields.from(detail)
             comments = detail.comments ?? []
+            dependencies = detail.dependencies ?? []
         } catch {
             self.error = error.localizedDescription
         }
@@ -1120,6 +1220,47 @@ struct IssueEditSheet: View {
             commentError = error.localizedDescription
         }
         isAddingComment = false
+    }
+
+    private func addDep() async {
+        let depID = newDepID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !depID.isEmpty else { return }
+        isAddingDep = true
+        depError = nil
+        let dir = workingDirectory
+        let id = issue.id
+        let dtype = newDepType
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.addDependency(issueID: id, depID: depID, type: dtype, workingDirectory: dir)
+            }.value
+            let detail = try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.showDetail(id: id, workingDirectory: dir)
+            }.value
+            dependencies = detail.dependencies ?? []
+            newDepID = ""
+        } catch {
+            depError = error.localizedDescription
+        }
+        isAddingDep = false
+    }
+
+    private func removeDep(_ dep: BeadsDependency) async {
+        depError = nil
+        let dir = workingDirectory
+        let id = issue.id
+        let depID = dep.id
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.removeDependency(issueID: id, depID: depID, workingDirectory: dir)
+            }.value
+            let detail = try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.showDetail(id: id, workingDirectory: dir)
+            }.value
+            dependencies = detail.dependencies ?? []
+        } catch {
+            depError = error.localizedDescription
+        }
     }
 
     private func saveIssue() {
