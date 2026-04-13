@@ -65,6 +65,8 @@ struct BeadsIssue: Identifiable {
     let priority: Int        // 0–4
     let issueType: String?   // "task", "bug", "feature", etc.
     let parentID: String?
+    let dependencyCount: Int      // issues this one depends on
+    let dependentCount:  Int      // issues depending on this one
     var children: [BeadsIssue]?   // nil = leaf node
 
     var statusSymbol: String {
@@ -294,9 +296,13 @@ enum BeadsRunner {
             let priority: Int
             let issueType: String?
             let parent: String?
+            let dependencyCount: Int?
+            let dependentCount:  Int?
             enum CodingKeys: String, CodingKey {
                 case id, title, status, priority, parent
                 case issueType = "issue_type"
+                case dependencyCount = "dependency_count"
+                case dependentCount  = "dependent_count"
             }
         }
 
@@ -308,7 +314,10 @@ enum BeadsRunner {
         for r in raw {
             nodeMap[r.id] = BeadsIssue(id: r.id, title: r.title, status: r.status,
                                        priority: r.priority, issueType: r.issueType,
-                                       parentID: r.parent, children: nil)
+                                       parentID: r.parent,
+                                       dependencyCount: r.dependencyCount ?? 0,
+                                       dependentCount:  r.dependentCount  ?? 0,
+                                       children: nil)
             if let p = r.parent { childIndex[p, default: []].append(r.id) }
         }
 
@@ -355,7 +364,7 @@ enum BeadsRunner {
 struct ContentView: View {
     @AppStorage("workingDirectory") private var workingDirectory: String = ""
     @AppStorage("recentProjects") private var recentProjectsJSON: String = "[]"
-    @State private var currentTab: AppTab = .create
+    @State private var currentTab: AppTab = .issues
 
     private var recentProjects: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(recentProjectsJSON.utf8))) ?? []
@@ -830,6 +839,13 @@ struct IssueRow: View {
 
             priorityBadge(issue.priorityLabel)
 
+            if issue.dependencyCount + issue.dependentCount > 0 {
+                Image(systemName: "link")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help("\(issue.dependencyCount) dependenc\(issue.dependencyCount == 1 ? "y" : "ies"), \(issue.dependentCount) dependent\(issue.dependentCount == 1 ? "" : "s")")
+            }
+
             Text(issue.title).lineLimit(1)
 
             Spacer()
@@ -1063,7 +1079,8 @@ struct IssueEditSheet: View {
             .padding()
             .background(.bar)
         }
-        .frame(minWidth: 520, idealWidth: max(560, preferredWidth), maxWidth: .infinity, minHeight: 540)
+        .frame(width: max(520, preferredWidth - 80))
+        .frame(minHeight: 540)
         .task { await loadDetail() }
     }
 
