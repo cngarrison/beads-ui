@@ -17,7 +17,7 @@ struct BeadsUIApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Beads Issue Creator") {
+        WindowGroup("Beads Issues") {
             ContentView()
         }
         .defaultSize(width: 920, height: 780)
@@ -392,9 +392,20 @@ enum BeadsRunner {
         p.standardOutput = out
         p.standardError  = err
         try p.run()
+        // Read stderr concurrently to prevent pipe-buffer deadlock on large output.
+        // If the child writes more than ~64 KB without the parent reading, both sides
+        // block forever (child can't write, parent waits for exit that never comes).
+        var stderrData = Data()
+        let stderrDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            stderrData = err.fileHandleForReading.readDataToEndOfFile()
+            stderrDone.signal()
+        }
+        let stdoutData = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        stderrDone.wait()
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         return (stdout, stderr, p.terminationStatus)
     }
 }
