@@ -20,7 +20,7 @@ struct BeadsUIApp: App {
         WindowGroup("Beads Issue Creator") {
             ContentView()
         }
-        .defaultSize(width: 640, height: 780)
+        .defaultSize(width: 920, height: 780)
     }
 }
 
@@ -107,11 +107,16 @@ struct BeadsIssueDetail: Decodable {
     let labels: [String]?             // JSON key "labels"
     let notes: String?
     let comments: [BeadsComment]?
-    let dependencies: [BeadsDependency]?
+    let dependencies:       [BeadsDependency]?  // upstream: what this issue depends on
+    let dependents:         [BeadsDependency]?  // downstream: children (parent-child) + issues blocked by this
+    let epicTotalChildren:  Int?
+    let epicClosedChildren: Int?
     enum CodingKeys: String, CodingKey {
-        case id, title, description, design, status, owner, assignee, labels, notes, comments, dependencies
+        case id, title, description, design, status, owner, assignee, labels, notes, comments, dependencies, dependents
         case priority, issueType = "issue_type"
-        case acceptanceCriteria = "acceptance_criteria"
+        case acceptanceCriteria  = "acceptance_criteria"
+        case epicTotalChildren   = "epic_total_children"
+        case epicClosedChildren  = "epic_closed_children"
     }
 }
 
@@ -735,7 +740,6 @@ struct IssueListView: View {
     @State private var copiedID:     String? = nil
     @State private var detailIssue:  BeadsIssue? = nil
     @State private var editIssue:    BeadsIssue? = nil
-    @State private var listWidth:    CGFloat = 600
 
     var body: some View {
         VStack(spacing: 0) {
@@ -749,10 +753,11 @@ struct IssueListView: View {
             IssueDetailSheet(issue: issue, workingDirectory: workingDirectory)
         }
         .sheet(item: $editIssue) { issue in
+            let w = NSApp.mainWindow?.frame.size.width ?? NSApp.keyWindow?.frame.size.width ?? 920
             IssueEditSheet(
                 issue: issue,
                 workingDirectory: workingDirectory,
-                preferredWidth: listWidth,
+                preferredWidth: w,
                 onSaved: { Task { await loadIssues() } }
             )
         }
@@ -808,11 +813,7 @@ struct IssueListView: View {
             }
             .listStyle(.plain)
             .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { listWidth = geo.size.width }
-                        .onChange(of: geo.size.width) { listWidth = $0 }
-                }
+
             )
         }
     }
@@ -1014,6 +1015,7 @@ struct IssueEditSheet: View {
     @State private var error: String? = nil
     @State private var comments: [BeadsComment] = []
     @State private var dependencies: [BeadsDependency] = []
+    @State private var dependents:   [BeadsDependency] = []
     @State private var newCommentText: String = ""
     @State private var isAddingComment = false
     @State private var commentError: String? = nil
@@ -1060,7 +1062,27 @@ struct IssueEditSheet: View {
 
                         Divider()
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Dependencies").font(.subheadline).fontWeight(.medium)
+                            // Children subsection (parent-child dependents, read-only)
+                    let children = dependents.filter { $0.dependencyType == "parent-child" }
+                    if !children.isEmpty {
+                        Text("Children").font(.subheadline).fontWeight(.medium)
+                        ForEach(children) { child in
+                            HStack(spacing: 6) {
+                                Text(child.status == "closed" ? "✓" : child.status == "in_progress" ? "◐" : "○")
+                                    .font(.caption)
+                                    .foregroundStyle(child.status == "closed" ? Color.green : child.status == "in_progress" ? Color.blue : Color.primary)
+                                Text(child.id)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Text(child.title).font(.subheadline).lineLimit(1)
+                                Spacer()
+                                Text("P\(child.priority)").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        Divider().padding(.vertical, 4)
+                    }
+
+                    Text("Dependencies").font(.subheadline).fontWeight(.medium)
 
                             if dependencies.isEmpty {
                                 Text("No dependencies.").foregroundStyle(.secondary).font(.subheadline)
@@ -1193,6 +1215,7 @@ struct IssueEditSheet: View {
             fields = IssueFormFields.from(detail)
             comments = detail.comments ?? []
             dependencies = detail.dependencies ?? []
+            dependents   = detail.dependents   ?? []
         } catch {
             self.error = error.localizedDescription
         }
@@ -1238,6 +1261,7 @@ struct IssueEditSheet: View {
                 try BeadsRunner.showDetail(id: id, workingDirectory: dir)
             }.value
             dependencies = detail.dependencies ?? []
+            dependents   = detail.dependents   ?? []
             newDepID = ""
         } catch {
             depError = error.localizedDescription
@@ -1258,6 +1282,7 @@ struct IssueEditSheet: View {
                 try BeadsRunner.showDetail(id: id, workingDirectory: dir)
             }.value
             dependencies = detail.dependencies ?? []
+            dependents   = detail.dependents   ?? []
         } catch {
             depError = error.localizedDescription
         }
