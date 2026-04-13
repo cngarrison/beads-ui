@@ -90,6 +90,53 @@ struct BeadsIssue: Identifiable {
     var priorityLabel: String { "P\(priority)" }
 }
 
+// Structured detail returned by `bd show --json <id>`
+struct BeadsIssueDetail: Decodable {
+    let id: String
+    let title: String
+    let description: String?
+    let design: String?
+    let acceptanceCriteria: String?   // JSON key "acceptance_criteria"
+    let status: String
+    let priority: Int
+    let issueType: String?
+    let assignee: String?             // JSON key "assignee" (display name)
+    let owner: String?                // email address
+    let labels: [String]?             // JSON key "labels"
+    enum CodingKeys: String, CodingKey {
+        case id, title, description, design, status, owner, assignee, labels
+        case priority, issueType = "issue_type"
+        case acceptanceCriteria = "acceptance_criteria"
+    }
+}
+
+// Shared form field state — used by both CreateIssueView and IssueEditSheet
+struct IssueFormFields {
+    var title              = ""
+    var description        = ""
+    var issueType: IssueType = .task
+    var priority: Priority   = .p2
+    var assignee           = ""
+    var labels             = ""
+    var externalRef        = ""
+    var designNotes        = ""
+    var acceptanceCriteria = ""
+    var dependencies       = ""
+
+    static func from(_ detail: BeadsIssueDetail) -> IssueFormFields {
+        var f = IssueFormFields()
+        f.title              = detail.title
+        f.description        = detail.description ?? ""
+        f.designNotes        = detail.design ?? ""
+        f.acceptanceCriteria = detail.acceptanceCriteria ?? ""
+        f.assignee           = detail.assignee ?? detail.owner ?? ""  // prefer display name
+        f.labels             = detail.labels?.joined(separator: ", ") ?? ""
+        if let t = detail.issueType, let it = IssueType(rawValue: t) { f.issueType = it }
+        if let p = Priority(rawValue: String(detail.priority))        { f.priority  = p }
+        return f
+    }
+}
+
 // MARK: - Beads Runner
 
 enum BeadsRunner {
@@ -140,7 +187,7 @@ enum BeadsRunner {
         return try buildTree(from: stdout)
     }
 
-    // MARK: Show
+    // MARK: Show (plain text — used by IssueDetailSheet)
 
     static func show(id: String, workingDirectory: String) throws -> String {
         let (stdout, stderr, status) = try run(["bd", "show", id], in: workingDirectory)
@@ -149,6 +196,55 @@ enum BeadsRunner {
             throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
         }
         return stdout
+    }
+
+    // MARK: Show Detail (JSON — used by IssueEditSheet for pre-populating the form)
+
+    static func showDetail(id: String, workingDirectory: String) throws -> BeadsIssueDetail {
+        let (stdout, stderr, status) = try run(["bd", "show", "--json", id], in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
+        }
+        let results = try JSONDecoder().decode([BeadsIssueDetail].self, from: Data(stdout.utf8))
+        guard let first = results.first else {
+            throw BeadsError.commandFailed("No detail returned for issue \(id)")
+        }
+        return first
+    }
+
+    // MARK: Update
+
+    static func update(id: String, fields: IssueFormFields, workingDirectory: String) throws {
+        var args = ["bd", "update", id]
+        // Title is always passed (required field)
+        args += ["--title", fields.title]
+        // Type and priority are always sent (pickers always have a value)
+        args += ["--type", fields.issueType.rawValue]
+        args += ["--priority", fields.priority.rawValue]
+        // Optional fields: only pass when non-empty to avoid unintentionally blanking data
+        if !fields.description.isEmpty { args += ["--description", fields.description] }
+        if !fields.assignee.isEmpty    { args += ["--assignee",    fields.assignee] }
+        if !fields.labels.isEmpty      { args += ["--set-labels",  fields.labels] }
+        if !fields.designNotes.isEmpty { args += ["--design",      fields.designNotes] }
+        // Acceptance criteria — only pass when non-empty (same safety policy as other optional fields)
+        if !fields.acceptanceCriteria.isEmpty { args += ["--acceptance", fields.acceptanceCriteria] }
+        // Labels — split on comma, trim whitespace, pass each with --set-labels
+        // Only pass when non-empty to avoid accidentally clearing labels
+        if !fields.labels.isEmpty {
+            let labelList = fields.labels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            for label in labelList {
+                args += ["--set-labels", label]
+            }
+        }
+        // Note: --external-ref and --deps are intentionally omitted since
+        // we cannot pre-populate them from the JSON response and would wipe existing data.
+
+        let (stdout, stderr, status) = try run(args, in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout.trimmingCharacters(in: .whitespacesAndNewlines) : msg)
+        }
     }
 
     // MARK: Close
@@ -342,21 +438,112 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Form Helpers (file-scope, shared by CreateIssueView and IssueEditSheet)
+
+@ViewBuilder
+func formField<C: View>(
+    _ label: String,
+    required: Bool = false,
+    @ViewBuilder content: () -> C
+) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 2) {
+            Text(label).font(.subheadline).fontWeight(.medium)
+            if required { Text("*").foregroundStyle(.red).font(.subheadline) }
+        }
+        content()
+    }
+}
+
+func formTextArea(
+    _ text: Binding<String>,
+    placeholder: String,
+    height: CGFloat
+) -> some View {
+    ZStack(alignment: .topLeading) {
+        if text.wrappedValue.isEmpty {
+            Text(placeholder)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 6).padding(.vertical, 9)
+                .allowsHitTesting(false)
+        }
+        TextEditor(text: text)
+            .frame(height: height)
+            .scrollContentBackground(.hidden)
+            .padding(4)
+    }
+    .background(
+        RoundedRectangle(cornerRadius: 6)
+            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+    )
+}
+
+// MARK: - Issue Form Content
+
+/// Reusable form body shared by CreateIssueView and IssueEditSheet.
+/// Contains all input fields; does NOT include banners, ScrollView, or bottom bar.
+struct IssueFormContent: View {
+    @Binding var fields: IssueFormFields
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            formField("Title", required: true) {
+                TextField("Brief summary of the issue", text: $fields.title)
+                    .textFieldStyle(.roundedBorder)
+            }
+            formField("Description") {
+                formTextArea($fields.description,
+                             placeholder: "Explain why this issue exists and what needs to be done\u{2026}",
+                             height: 80)
+            }
+            HStack(alignment: .top, spacing: 20) {
+                formField("Type") {
+                    Picker("", selection: $fields.issueType) {
+                        ForEach(IssueType.allCases) { t in Text(t.label).tag(t) }
+                    }.labelsHidden().frame(maxWidth: .infinity)
+                }
+                formField("Priority") {
+                    Picker("", selection: $fields.priority) {
+                        ForEach(Priority.allCases) { p in Text(p.label).tag(p) }
+                    }.labelsHidden().frame(maxWidth: .infinity)
+                }
+            }
+            HStack(alignment: .top, spacing: 20) {
+                formField("Assignee") {
+                    TextField("username or email", text: $fields.assignee).textFieldStyle(.roundedBorder)
+                }
+                formField("Labels") {
+                    TextField("urgent, backend, needs-review", text: $fields.labels).textFieldStyle(.roundedBorder)
+                }
+            }
+            HStack(alignment: .top, spacing: 20) {
+                formField("External Reference") {
+                    TextField("gh-123, jira-ABC-456", text: $fields.externalRef).textFieldStyle(.roundedBorder)
+                }
+                formField("Dependencies") {
+                    TextField("discovered-from:bd-20, blocks:bd-15", text: $fields.dependencies).textFieldStyle(.roundedBorder)
+                }
+            }
+            formField("Design Notes") {
+                formTextArea($fields.designNotes,
+                             placeholder: "Describe the technical approach or design details\u{2026}",
+                             height: 70)
+            }
+            formField("Acceptance Criteria") {
+                formTextArea($fields.acceptanceCriteria,
+                             placeholder: "List the criteria for completion\u{2026}",
+                             height: 70)
+            }
+        }
+    }
+}
+
 // MARK: - Create Issue View
 
 struct CreateIssueView: View {
     @Binding var workingDirectory: String
 
-    @State private var title              = ""
-    @State private var description        = ""
-    @State private var issueType: IssueType = .task
-    @State private var priority: Priority   = .p2
-    @State private var assignee           = ""
-    @State private var labels             = ""
-    @State private var externalRef        = ""
-    @State private var designNotes        = ""
-    @State private var acceptanceCriteria = ""
-    @State private var dependencies       = ""
+    @State private var fields = IssueFormFields()
 
     @State private var isSubmitting   = false
     @State private var createdIssueID: String? = nil
@@ -364,7 +551,7 @@ struct CreateIssueView: View {
     @State private var showCopied     = false
 
     private var canSubmit: Bool {
-        !title.trimmingCharacters(in: .whitespaces).isEmpty
+        !fields.title.trimmingCharacters(in: .whitespaces).isEmpty
             && !workingDirectory.isEmpty && !isSubmitting
     }
 
@@ -372,63 +559,9 @@ struct CreateIssueView: View {
         VStack(spacing: 0) {
             if let id  = createdIssueID { successBanner(issueID: id) }
             if let err = errorMessage   { errorBanner(message: err) }
-            ScrollView { formContent.padding() }
+            ScrollView { IssueFormContent(fields: $fields).padding() }
             Divider()
             bottomBar
-        }
-    }
-
-    // MARK: Form
-
-    private var formContent: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            field("Title", required: true) {
-                TextField("Brief summary of the issue", text: $title)
-                    .textFieldStyle(.roundedBorder)
-            }
-            field("Description") {
-                textArea($description,
-                         placeholder: "Explain why this issue exists and what needs to be done\u{2026}",
-                         height: 80)
-            }
-            HStack(alignment: .top, spacing: 20) {
-                field("Type") {
-                    Picker("", selection: $issueType) {
-                        ForEach(IssueType.allCases) { t in Text(t.label).tag(t) }
-                    }.labelsHidden().frame(maxWidth: .infinity)
-                }
-                field("Priority") {
-                    Picker("", selection: $priority) {
-                        ForEach(Priority.allCases) { p in Text(p.label).tag(p) }
-                    }.labelsHidden().frame(maxWidth: .infinity)
-                }
-            }
-            HStack(alignment: .top, spacing: 20) {
-                field("Assignee") {
-                    TextField("username or email", text: $assignee).textFieldStyle(.roundedBorder)
-                }
-                field("Labels") {
-                    TextField("urgent, backend, needs-review", text: $labels).textFieldStyle(.roundedBorder)
-                }
-            }
-            HStack(alignment: .top, spacing: 20) {
-                field("External Reference") {
-                    TextField("gh-123, jira-ABC-456", text: $externalRef).textFieldStyle(.roundedBorder)
-                }
-                field("Dependencies") {
-                    TextField("discovered-from:bd-20, blocks:bd-15", text: $dependencies).textFieldStyle(.roundedBorder)
-                }
-            }
-            field("Design Notes") {
-                textArea($designNotes,
-                         placeholder: "Describe the technical approach or design details\u{2026}",
-                         height: 70)
-            }
-            field("Acceptance Criteria") {
-                textArea($acceptanceCriteria,
-                         placeholder: "List the criteria for completion\u{2026}",
-                         height: 70)
-            }
         }
     }
 
@@ -478,42 +611,10 @@ struct CreateIssueView: View {
         .background(Color.orange.opacity(0.10))
     }
 
-    // MARK: Helpers
-
-    @ViewBuilder
-    private func field<C: View>(_ label: String, required: Bool = false, @ViewBuilder content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 2) {
-                Text(label).font(.subheadline).fontWeight(.medium)
-                if required { Text("*").foregroundStyle(.red).font(.subheadline) }
-            }
-            content()
-        }
-    }
-
-    private func textArea(_ text: Binding<String>, placeholder: String, height: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
-            if text.wrappedValue.isEmpty {
-                Text(placeholder)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 6).padding(.vertical, 9)
-                    .allowsHitTesting(false)
-            }
-            TextEditor(text: text)
-                .frame(height: height)
-                .scrollContentBackground(.hidden)
-                .padding(4)
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-        )
-    }
+    // MARK: Actions
 
     private func clearFormFields() {
-        title = ""; description = ""; issueType = .task; priority = .p2
-        assignee = ""; labels = ""; externalRef = ""
-        designNotes = ""; acceptanceCriteria = ""; dependencies = ""
+        fields = IssueFormFields()
         errorMessage = nil
     }
 
@@ -529,17 +630,18 @@ struct CreateIssueView: View {
     private func submitIssue() {
         guard !workingDirectory.isEmpty else { errorMessage = "No repository selected."; return }
         isSubmitting = true; errorMessage = nil; createdIssueID = nil
-        let s = (title: title, desc: description, type: issueType, pri: priority,
-                 assignee: assignee, labels: labels, ref: externalRef,
-                 design: designNotes, ac: acceptanceCriteria, deps: dependencies,
-                 dir: workingDirectory)
+        let snap = fields
+        let dir  = workingDirectory
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let id = try BeadsRunner.create(
-                    title: s.title, description: s.desc, type: s.type, priority: s.pri,
-                    assignee: s.assignee, labels: s.labels, externalRef: s.ref,
-                    designNotes: s.design, acceptanceCriteria: s.ac, dependencies: s.deps,
-                    workingDirectory: s.dir)
+                    title: snap.title, description: snap.description,
+                    type: snap.issueType, priority: snap.priority,
+                    assignee: snap.assignee, labels: snap.labels,
+                    externalRef: snap.externalRef, designNotes: snap.designNotes,
+                    acceptanceCriteria: snap.acceptanceCriteria,
+                    dependencies: snap.dependencies,
+                    workingDirectory: dir)
                 DispatchQueue.main.async { isSubmitting = false; createdIssueID = id; clearFormFields() }
             } catch {
                 DispatchQueue.main.async { isSubmitting = false; errorMessage = error.localizedDescription }
@@ -558,6 +660,8 @@ struct IssueListView: View {
     @State private var errorMessage: String? = nil
     @State private var copiedID:     String? = nil
     @State private var detailIssue:  BeadsIssue? = nil
+    @State private var editIssue:    BeadsIssue? = nil
+    @State private var listWidth:    CGFloat = 600
 
     var body: some View {
         VStack(spacing: 0) {
@@ -569,6 +673,14 @@ struct IssueListView: View {
         .onChange(of: workingDirectory) { newDir in Task { await loadIssues(dir: newDir) } }
         .sheet(item: $detailIssue) { issue in
             IssueDetailSheet(issue: issue, workingDirectory: workingDirectory)
+        }
+        .sheet(item: $editIssue) { issue in
+            IssueEditSheet(
+                issue: issue,
+                workingDirectory: workingDirectory,
+                preferredWidth: listWidth,
+                onSaved: { Task { await loadIssues() } }
+            )
         }
     }
 
@@ -616,10 +728,18 @@ struct IssueListView: View {
         } else {
             List(issues, children: \.children) { issue in
                 IssueRow(issue: issue, copiedID: $copiedID,
+                         onEdit: { editIssue = issue },
                          onShowDetail: { detailIssue = issue },
                          onClose: { Task { await closeIssue(issue) } })
             }
             .listStyle(.plain)
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { listWidth = geo.size.width }
+                        .onChange(of: geo.size.width) { listWidth = $0 }
+                }
+            )
         }
     }
 
@@ -666,6 +786,7 @@ struct IssueListView: View {
 struct IssueRow: View {
     let issue: BeadsIssue
     @Binding var copiedID: String?
+    var onEdit: () -> Void = {}
     var onShowDetail: () -> Void = {}
     var onClose: () -> Void = {}
 
@@ -691,14 +812,15 @@ struct IssueRow: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { onShowDetail() }
+        .onTapGesture(count: 2) { onEdit() }
         .onTapGesture { copyID() }
         .contextMenu {
+            Button("Edit Issue") { onEdit() }
             Button("View Detail") { onShowDetail() }
             Divider()
             Button("Close Issue") { onClose() }
         }
-        .help("Click to copy ID · Double-click to view detail")
+        .help("Click to copy ID \u{00B7} Double-click to edit issue")
         .padding(.vertical, 2)
     }
 
@@ -745,7 +867,7 @@ struct IssueDetailSheet: View {
             HStack {
                 Text(issue.id)
                     .font(.system(.headline, design: .monospaced))
-                Text("–")
+                Text("\u{2013}")
                 Text(issue.title)
                     .fontWeight(.semibold)
                     .lineLimit(1)
@@ -758,7 +880,7 @@ struct IssueDetailSheet: View {
             .background(.bar)
             Divider()
             if isLoading {
-                ProgressView("Loading…")
+                ProgressView("Loading\u{2026}")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let err = error {
                 VStack(spacing: 12) {
@@ -793,5 +915,115 @@ struct IssueDetailSheet: View {
             self.error = error.localizedDescription
         }
         isLoading = false
+    }
+}
+
+// MARK: - Issue Edit Sheet
+
+struct IssueEditSheet: View {
+    let issue: BeadsIssue
+    let workingDirectory: String
+    let preferredWidth: CGFloat
+    let onSaved: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var fields    = IssueFormFields()
+    @State private var isLoading = true
+    @State private var isSaving  = false
+    @State private var error: String? = nil
+
+    private var canSave: Bool {
+        !fields.title.trimmingCharacters(in: .whitespaces).isEmpty && !isSaving
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(issue.id)
+                    .font(.system(.headline, design: .monospaced))
+                Text("\u{2013}")
+                Text(issue.title)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding()
+            .background(.bar)
+            Divider()
+
+            if isLoading {
+                ProgressView("Loading\u{2026}")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let err = error {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 32)).foregroundStyle(.orange)
+                    Text(err).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("Dismiss") { dismiss() }.buttonStyle(.bordered)
+                }
+                .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    IssueFormContent(fields: $fields).padding()
+                }
+            }
+
+            Divider()
+
+            // Bottom bar
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.escape, modifiers: [])
+                Spacer()
+                if isSaving { ProgressView().scaleEffect(0.75).padding(.trailing, 4) }
+                Button("Save") { saveIssue() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canSave)
+                    .keyboardShortcut(.return, modifiers: .command)
+            }
+            .padding()
+            .background(.bar)
+        }
+        .frame(minWidth: 520, idealWidth: max(560, preferredWidth), maxWidth: .infinity, minHeight: 540)
+        .task { await loadDetail() }
+    }
+
+    private func loadDetail() async {
+        let dir = workingDirectory
+        let id  = issue.id
+        do {
+            let detail = try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.showDetail(id: id, workingDirectory: dir)
+            }.value
+            fields = IssueFormFields.from(detail)
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    private func saveIssue() {
+        guard canSave else { return }
+        isSaving = true
+        let snap = fields
+        let dir  = workingDirectory
+        let id   = issue.id
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try BeadsRunner.update(id: id, fields: snap, workingDirectory: dir)
+                DispatchQueue.main.async {
+                    isSaving = false
+                    onSaved()
+                    dismiss()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isSaving = false
+                    self.error = error.localizedDescription
+                }
+            }
+        }
     }
 }
