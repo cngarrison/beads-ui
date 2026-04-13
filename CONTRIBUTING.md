@@ -41,12 +41,33 @@ The [ROADMAP.md](ROADMAP.md) items are written to give enough context for an AI 
 
 ---
 
+## Issue Tracker Sync
+
+BeadsUI uses [beads](https://github.com/cngarrison/beads) (`bd`) for issue tracking. Issues are stored in the Git repo under `refs/dolt/data` alongside the source code — no separate account or service needed.
+
+**First-time setup** (after cloning):
+```bash
+bd bootstrap   # pulls the issue database from the remote
+bd list        # verify issues are visible
+```
+
+**Day-to-day:**
+```bash
+bd dolt pull   # pull latest issues before starting work
+bd dolt push   # push your changes after creating/closing issues
+```
+
+---
+
 ## Development setup
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/beads-ui.git
+git clone https://github.com/cngarrison/beads-ui.git
 cd beads-ui
+
+# One-time setup: git hooks + issue tracker bootstrap
+make setup
 
 # Build
 make
@@ -57,6 +78,8 @@ make run
 # Build the app icon (requires: brew install librsvg)
 make icon && make
 ```
+
+`make setup` configures the `.githooks` directory (which includes hooks that auto-sync `bd dolt push/pull`) and runs `bd bootstrap` to pull the issue database from the repo.
 
 No Xcode required. No Swift Package Manager. No dependencies beyond the Xcode Command Line Tools.
 
