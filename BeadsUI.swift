@@ -9,6 +9,8 @@ import AppKit
 
 @main
 struct BeadsUIApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     init() {
         // Explicitly set regular activation policy so the app appears
         // in the Dock and ⌘-Tab switcher when built outside of Xcode.
@@ -28,13 +30,13 @@ struct BeadsUIApp: App {
 
 enum AppTab: Hashable { case create, issues }
 
-enum IssueType: String, CaseIterable, Identifiable {
+enum IssueType: String, CaseIterable, Identifiable, Codable {
     case task, bug, feature, epic, chore
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
 }
 
-enum Priority: String, CaseIterable, Identifiable {
+enum Priority: String, CaseIterable, Identifiable, Codable {
     case p0 = "0", p1 = "1", p2 = "2", p3 = "3", p4 = "4"
     var id: String { rawValue }
     var label: String {
@@ -144,7 +146,7 @@ struct BeadsComment: Decodable, Identifiable {
 }
 
 // Shared form field state — used by both CreateIssueView and IssueEditSheet
-struct IssueFormFields {
+struct IssueFormFields: Codable {
     var title              = ""
     var description        = ""
     var issueType: IssueType = .task
@@ -156,6 +158,12 @@ struct IssueFormFields {
     var acceptanceCriteria = ""
     var dependencies       = ""
     var notes              = ""
+
+    var hasUnsavedContent: Bool {
+        !title.isEmpty || !description.isEmpty || !assignee.isEmpty ||
+        !labels.isEmpty || !externalRef.isEmpty || !designNotes.isEmpty ||
+        !acceptanceCriteria.isEmpty || !dependencies.isEmpty || !notes.isEmpty
+    }
 
     static func from(_ detail: BeadsIssueDetail) -> IssueFormFields {
         var f = IssueFormFields()
@@ -169,6 +177,71 @@ struct IssueFormFields {
         if let t = detail.issueType, let it = IssueType(rawValue: t) { f.issueType = it }
         if let p = Priority(rawValue: String(detail.priority))        { f.priority  = p }
         return f
+    }
+}
+
+// MARK: - Draft Manager
+
+/// Singleton observable object that owns the Create-form field state and
+/// provides UserDefaults-backed draft persistence.
+class FormDraftManager: ObservableObject {
+    static let shared = FormDraftManager()
+    private let draftKey = "createFormDraft"
+
+    @Published var fields = IssueFormFields()
+
+    // MARK: Persistence
+
+    func saveDraft() {
+        guard let data = try? JSONEncoder().encode(fields) else { return }
+        UserDefaults.standard.set(data, forKey: draftKey)
+    }
+
+    func hasDraft() -> Bool {
+        UserDefaults.standard.data(forKey: draftKey) != nil
+    }
+
+    func resumeDraft() {
+        guard let data = UserDefaults.standard.data(forKey: draftKey),
+              let saved = try? JSONDecoder().decode(IssueFormFields.self, from: data) else { return }
+        fields = saved
+    }
+
+    func clearDraft() {
+        UserDefaults.standard.removeObject(forKey: draftKey)
+    }
+
+    func clearFields() {
+        fields = IssueFormFields()
+    }
+}
+
+// MARK: - App Delegate (quit protection)
+
+class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let manager = FormDraftManager.shared
+        guard manager.fields.hasUnsavedContent else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.messageText = "Discard unsaved issue?"
+        alert.informativeText = "The Create form has unsaved content."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save Draft & Quit")
+        alert.addButton(withTitle: "Discard & Quit")
+        alert.addButton(withTitle: "Cancel")
+
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:   // Save Draft & Quit
+            manager.saveDraft()
+            return .terminateNow
+        case .alertSecondButtonReturn:  // Discard & Quit
+            manager.clearDraft()
+            return .terminateNow
+        default:                        // Cancel
+            return .terminateCancel
+        }
     }
 }
 
@@ -304,25 +377,32 @@ enum BeadsRunner {
 
     // MARK: Update
 
-    static func update(id: String, fields: IssueFormFields, workingDirectory: String) throws {
+    /// Update an issue.  `original` is the field state when the form was first loaded;
+    /// any field that was non-empty originally but is now empty will be explicitly cleared
+    /// by passing the flag with an empty string.
+    static func update(id: String, fields: IssueFormFields, original: IssueFormFields = IssueFormFields(), workingDirectory: String) throws {
         var args = ["bd", "update", id]
         // Title is always passed (required field)
         args += ["--title", fields.title]
         // Type and priority are always sent (pickers always have a value)
         args += ["--type", fields.issueType.rawValue]
         args += ["--priority", fields.priority.rawValue]
-        // Optional fields: only pass when non-empty to avoid unintentionally blanking data
-        if !fields.description.isEmpty { args += ["--description", fields.description] }
-        if !fields.assignee.isEmpty    { args += ["--assignee",    fields.assignee] }
-        if !fields.labels.isEmpty      { args += ["--set-labels",  fields.labels] }
-        if !fields.designNotes.isEmpty { args += ["--design",      fields.designNotes] }
-        // Acceptance criteria — only pass when non-empty (same safety policy as other optional fields)
-        if !fields.acceptanceCriteria.isEmpty { args += ["--acceptance", fields.acceptanceCriteria] }
-        // Notes — only pass when non-empty
-        if !fields.notes.isEmpty { args += ["--notes", fields.notes] }
-        // Labels — split on comma, trim whitespace, pass each with --set-labels
-        // Only pass when non-empty to avoid accidentally clearing labels
-        if !fields.labels.isEmpty {
+
+        // Helper: pass a flag when the field is non-empty (set/update) OR was originally
+        // non-empty but is now empty (explicit clear).  Fields that were always empty are
+        // omitted so we don't accidentally blank data that was never loaded into the form.
+        func shouldPass(_ current: String, _ orig: String) -> Bool {
+            !current.isEmpty || !orig.isEmpty
+        }
+
+        if shouldPass(fields.description,        original.description)        { args += ["--description", fields.description] }
+        if shouldPass(fields.assignee,            original.assignee)            { args += ["--assignee",     fields.assignee] }
+        if shouldPass(fields.designNotes,         original.designNotes)         { args += ["--design",       fields.designNotes] }
+        if shouldPass(fields.acceptanceCriteria,  original.acceptanceCriteria)  { args += ["--acceptance",   fields.acceptanceCriteria] }
+        if shouldPass(fields.notes,               original.notes)               { args += ["--notes",        fields.notes] }
+        // Labels — split on comma, trim whitespace, pass each with --set-labels.
+        // Pass the flag (even empty) when labels were originally set, so clearing them works.
+        if shouldPass(fields.labels, original.labels) {
             let labelList = fields.labels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             for label in labelList {
                 args += ["--set-labels", label]
@@ -687,25 +767,32 @@ struct IssueFormContent: View {
 struct CreateIssueView: View {
     @Binding var workingDirectory: String
 
-    @State private var fields = IssueFormFields()
+    @ObservedObject private var draftManager = FormDraftManager.shared
 
-    @State private var isSubmitting   = false
+    @State private var isSubmitting    = false
     @State private var createdIssueID: String? = nil
-    @State private var errorMessage:  String? = nil
-    @State private var showCopied     = false
+    @State private var errorMessage:   String? = nil
+    @State private var showCopied      = false
+    @State private var showDraftBanner = false
 
     private var canSubmit: Bool {
-        !fields.title.trimmingCharacters(in: .whitespaces).isEmpty
+        !draftManager.fields.title.trimmingCharacters(in: .whitespaces).isEmpty
             && !workingDirectory.isEmpty && !isSubmitting
     }
 
     var body: some View {
         VStack(spacing: 0) {
             if let id  = createdIssueID { successBanner(issueID: id) }
+            if showDraftBanner          { draftBanner }
             if let err = errorMessage   { errorBanner(message: err) }
-            ScrollView { IssueFormContent(fields: $fields).padding() }
+            ScrollView { IssueFormContent(fields: $draftManager.fields).padding() }
             Divider()
             bottomBar
+        }
+        .onAppear {
+            if draftManager.hasDraft() {
+                showDraftBanner = true
+            }
         }
     }
 
@@ -725,6 +812,29 @@ struct CreateIssueView: View {
     }
 
     // MARK: Banners
+
+    @ViewBuilder
+    private var draftBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.badge.clock").foregroundStyle(.blue)
+            Text("You have an unsaved draft.").fontWeight(.medium)
+            Spacer()
+            Button("Resume") {
+                draftManager.resumeDraft()
+                draftManager.clearDraft()
+                showDraftBanner = false
+            }
+            .buttonStyle(.borderedProminent).controlSize(.small)
+            Button("Discard") {
+                draftManager.clearDraft()
+                draftManager.clearFields()
+                showDraftBanner = false
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+        }
+        .padding(.horizontal).padding(.vertical, 8)
+        .background(Color.blue.opacity(0.10))
+    }
 
     @ViewBuilder
     private func successBanner(issueID: String) -> some View {
@@ -758,8 +868,10 @@ struct CreateIssueView: View {
     // MARK: Actions
 
     private func clearFormFields() {
-        fields = IssueFormFields()
+        draftManager.clearFields()
+        draftManager.clearDraft()
         errorMessage = nil
+        showDraftBanner = false
     }
 
     private func clearForm() { clearFormFields(); createdIssueID = nil }
@@ -774,7 +886,7 @@ struct CreateIssueView: View {
     private func submitIssue() {
         guard !workingDirectory.isEmpty else { errorMessage = "No repository selected."; return }
         isSubmitting = true; errorMessage = nil; createdIssueID = nil
-        let snap = fields
+        let snap = draftManager.fields
         let dir  = workingDirectory
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -1075,7 +1187,8 @@ struct IssueEditSheet: View {
     let onSaved: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var fields    = IssueFormFields()
+    @State private var fields         = IssueFormFields()
+    @State private var originalFields = IssueFormFields()   // snapshot at load time — used to detect cleared fields
     @State private var isLoading = true
     @State private var isSaving  = false
     @State private var error: String? = nil
@@ -1279,6 +1392,7 @@ struct IssueEditSheet: View {
                 try BeadsRunner.showDetail(id: id, workingDirectory: dir)
             }.value
             fields = IssueFormFields.from(detail)
+            originalFields = fields   // capture baseline so update() can detect clears
             comments = detail.comments ?? []
             dependencies = detail.dependencies ?? []
             dependents   = detail.dependents   ?? []
@@ -1357,12 +1471,13 @@ struct IssueEditSheet: View {
     private func saveIssue() {
         guard canSave else { return }
         isSaving = true
-        let snap = fields
-        let dir  = workingDirectory
-        let id   = issue.id
+        let snap     = fields
+        let origSnap = originalFields
+        let dir      = workingDirectory
+        let id       = issue.id
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try BeadsRunner.update(id: id, fields: snap, workingDirectory: dir)
+                try BeadsRunner.update(id: id, fields: snap, original: origSnap, workingDirectory: dir)
                 DispatchQueue.main.async {
                     isSaving = false
                     onSaved()
