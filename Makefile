@@ -27,7 +27,7 @@ all: $(BUNDLE)
 	@echo ""
 	@echo "✅  Built $(BUNDLE)  —  run with: make run"
 
-$(BUNDLE): BeadsUI.swift Info.plist
+$(BUNDLE): $(wildcard *.swift) Info.plist
 	@echo "→ Compiling $(APP_NAME) for $(TARGET)…"
 	@mkdir -p $(BUNDLE)/Contents/MacOS
 	@mkdir -p $(RES_DIR)
@@ -37,7 +37,7 @@ $(BUNDLE): BeadsUI.swift Info.plist
 		-target $(TARGET) \
 		-O \
 		-o "$(BINARY)" \
-		BeadsUI.swift
+		*.swift
 	@cp Info.plist "$(PLIST_DST)"
 	@# Copy icon into bundle if it has been built
 	@if [ -f "$(ICNS)" ]; then \
