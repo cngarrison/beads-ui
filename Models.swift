@@ -6,8 +6,6 @@ import AppKit
 
 // MARK: - Domain Enums
 
-enum AppTab: Hashable { case create, issues }
-
 enum IssueType: String, CaseIterable, Identifiable, Codable {
     case task, bug, feature, epic, chore
     var id: String { rawValue }

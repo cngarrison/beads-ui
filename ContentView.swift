@@ -25,12 +25,14 @@ struct BeadsUIApp: App {
     }
 }
 
-// MARK: - Content View (tab container)
+// MARK: - Content View
 
 struct ContentView: View {
     @AppStorage("workingDirectory") private var workingDirectory: String = ""
     @AppStorage("recentProjects") private var recentProjectsJSON: String = "[]"
-    @State private var currentTab: AppTab = .issues
+    @State private var showingCreateSheet = false
+    @State private var issueRefreshTrigger = 0
+    @State private var createSheetWidth: CGFloat = 600
 
     private var recentProjects: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(recentProjectsJSON.utf8))) ?? []
@@ -50,30 +52,36 @@ struct ContentView: View {
         VStack(spacing: 0) {
             topBar
             Divider()
-            switch currentTab {
-            case .create:
-                CreateIssueView(workingDirectory: $workingDirectory)
-            case .issues:
-                IssueListView(workingDirectory: workingDirectory)
-            }
+            IssueListView(workingDirectory: workingDirectory, refreshTrigger: issueRefreshTrigger)
         }
         .frame(minWidth: 520, minHeight: 560)
         .onAppear {
             if !workingDirectory.isEmpty { addToRecents(workingDirectory) }
         }
+        .sheet(isPresented: $showingCreateSheet, onDismiss: {
+            issueRefreshTrigger += 1
+        }) {
+            CreateIssueView(workingDirectory: $workingDirectory, preferredWidth: createSheetWidth)
+        }
     }
 
     private var topBar: some View {
         HStack(spacing: 12) {
-            Picker("", selection: $currentTab) {
-                Label("Create", systemImage: "plus.circle").tag(AppTab.create)
-                Label("Issues", systemImage: "list.bullet").tag(AppTab.issues)
+            // Left: project-scoped Create action
+            Button {
+                createSheetWidth = (NSApp.keyWindow?.frame.size.width ?? 680) - 80
+                showingCreateSheet = true
+            } label: {
+                Label("Create", systemImage: "plus.circle.fill")
             }
-            .pickerStyle(.segmented)
-            .fixedSize()
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(workingDirectory.isEmpty)
+            .help(workingDirectory.isEmpty ? "Select a repository first" : "Create a new issue")
 
             Spacer()
 
+            // Right: cross-project controls
             Image(systemName: "folder").foregroundStyle(.secondary)
             projectSelector
             Button("Choose\u{2026}") { pickWorkingDirectory() }

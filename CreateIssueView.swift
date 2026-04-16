@@ -111,7 +111,9 @@ struct IssueFormContent: View {
 
 struct CreateIssueView: View {
     @Binding var workingDirectory: String
+    var preferredWidth: CGFloat = 600
 
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var draftManager = FormDraftManager.shared
 
     @State private var isSubmitting    = false
@@ -127,6 +129,19 @@ struct CreateIssueView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Sheet title bar
+            HStack {
+                Text("New Issue").font(.headline)
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .disabled(isSubmitting)
+            }
+            .padding()
+            .background(.bar)
+            Divider()
+
             if let id  = createdIssueID { successBanner(issueID: id) }
             if showDraftBanner          { draftBanner }
             if let err = errorMessage   { errorBanner(message: err) }
@@ -134,6 +149,8 @@ struct CreateIssueView: View {
             Divider()
             bottomBar
         }
+        .frame(width: max(520, preferredWidth))
+        .frame(minHeight: 560)
         .onAppear {
             if draftManager.hasDraft() {
                 showDraftBanner = true
@@ -148,7 +165,12 @@ struct CreateIssueView: View {
             Button("Clear") { clearForm() }.buttonStyle(.bordered).disabled(isSubmitting)
             Spacer()
             if isSubmitting { ProgressView().scaleEffect(0.75).padding(.trailing, 4) }
-            Button("Create Issue") { submitIssue() }
+            // Secondary: create and stay open for batch entry
+            Button("Create & Add Another") { submitIssue(keepOpen: true) }
+                .buttonStyle(.bordered)
+                .disabled(!canSubmit)
+            // Primary: create and return to list
+            Button("Create Issue") { submitIssue(keepOpen: false) }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canSubmit)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -228,7 +250,10 @@ struct CreateIssueView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showCopied = false }
     }
 
-    private func submitIssue() {
+    /// Submit the form.
+    /// - Parameter keepOpen: `false` → dismiss after success (Create Issue);
+    ///                       `true`  → clear form and stay open (Create & Add Another).
+    private func submitIssue(keepOpen: Bool) {
         guard !workingDirectory.isEmpty else { errorMessage = "No repository selected."; return }
         isSubmitting = true; errorMessage = nil; createdIssueID = nil
         let snap = draftManager.fields
@@ -243,7 +268,22 @@ struct CreateIssueView: View {
                     acceptanceCriteria: snap.acceptanceCriteria,
                     dependencies: snap.dependencies,
                     workingDirectory: dir)
-                DispatchQueue.main.async { isSubmitting = false; createdIssueID = id; clearFormFields() }
+                DispatchQueue.main.async {
+                    isSubmitting = false
+                    createdIssueID = id
+                    clearFormFields()
+                    if keepOpen {
+                        // Stay open: banner shows briefly, form already cleared
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            createdIssueID = nil
+                        }
+                    } else {
+                        // Dismiss after brief success banner
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            dismiss()
+                        }
+                    }
+                }
             } catch {
                 DispatchQueue.main.async { isSubmitting = false; errorMessage = error.localizedDescription }
             }

@@ -8,6 +8,7 @@ import AppKit
 
 struct IssueListView: View {
     let workingDirectory: String
+    var refreshTrigger: Int = 0
 
     @State private var issues:       [BeadsIssue] = []
     @State private var isLoading     = false
@@ -25,6 +26,7 @@ struct IssueListView: View {
         }
         .task { await loadIssues() }
         .onChange(of: workingDirectory) { newDir in Task { await loadIssues(dir: newDir) } }
+        .onChange(of: refreshTrigger) { _ in Task { await loadIssues() } }
         .sheet(item: $detailIssue) { issue in
             IssueDetailSheet(issue: issue, workingDirectory: workingDirectory)
         }
