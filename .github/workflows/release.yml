@@ -63,8 +63,8 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
       # ── 3. Build ──────────────────────────────────────────────────────────
-      - name: Build BeadsUI.app
-        run: make
+      - name: Build BeadsUI.app (universal binary)
+        run: make universal
 
       # ── 4. Sign ───────────────────────────────────────────────────────────
       - name: Sign app bundle
