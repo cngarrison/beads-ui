@@ -9,6 +9,8 @@ jobs:
   build-sign-release:
     name: Build, Sign & Publish
     runs-on: macos-14
+    permissions:
+      contents: write   # required to create GitHub Releases
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────
