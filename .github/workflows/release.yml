@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-sign-release:
+    name: Build, Sign & Publish
+    runs-on: macos-14
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Verify tag matches Info.plist version ──────────────────────────
+      - name: Verify version consistency
+        run: |
+          PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"   # strip leading 'v'
+          echo "Info.plist version : $PLIST_VERSION"
+          echo "Tag version        : $TAG_VERSION"
+          if [ "$PLIST_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Version mismatch. Run ./scripts/release-version.sh to bump Info.plist before tagging."
+            exit 1
+          fi
+          echo "✓ Versions match: $PLIST_VERSION"
+
+      # ── 3. Import signing certificate into a temporary keychain ──────────
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 20)"
+
+          # Decode certificate
+          echo "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          # Create & configure temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+
+          # Allow codesign to access the key without UI prompts
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          # Make this keychain the default search list entry
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+      # ── 3. Build ──────────────────────────────────────────────────────────
+      - name: Build BeadsUI.app
+        run: make
+
+      # ── 4. Sign ───────────────────────────────────────────────────────────
+      - name: Sign app bundle
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Resolve the full identity from the keychain (avoids hardcoding names)
+          IDENTITY=$(security find-identity -v -p codesigning | \
+            grep -o '"Developer ID Application:[^"]*"' | head -1 | tr -d '"')
+
+          echo "Signing with: $IDENTITY"
+
+          codesign \
+            --deep \
+            --force \
+            --options runtime \
+            --entitlements BeadsUI.entitlements \
+            --sign "$IDENTITY" \
+            --timestamp \
+            BeadsUI.app
+
+          # Verify
+          codesign --verify --deep --strict --verbose=2 BeadsUI.app
+
+      # ── 5. Package into a DMG ─────────────────────────────────────────────
+      - name: Package DMG
+        run: |
+          VERSION="${GITHUB_REF_NAME}"   # e.g. v1.2.0
+          DMG_NAME="BeadsUI-${VERSION}.dmg"
+
+          # Staging folder
+          mkdir -p dist
+          cp -r BeadsUI.app dist/
+
+          hdiutil create \
+            -volname "BeadsUI ${VERSION}" \
+            -srcfolder dist \
+            -ov \
+            -format UDZO \
+            "$DMG_NAME"
+
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      # ── 6. Notarize ───────────────────────────────────────────────────────
+      - name: Write App Store Connect API key
+        env:
+          NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+        run: |
+          echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/auth.p8"
+
+      - name: Notarize DMG
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_KEY_ISSUER: ${{ secrets.APPLE_NOTARY_KEY_ISSUER }}
+        run: |
+          xcrun notarytool submit "$DMG_NAME" \
+            --key "$RUNNER_TEMP/auth.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_KEY_ISSUER" \
+            --wait \
+            --output-format plist
+
+      # ── 7. Staple notarization ticket ─────────────────────────────────────
+      - name: Staple
+        run: xcrun stapler staple "$DMG_NAME"
+
+      # ── 8. Verify (sanity check before publishing) ────────────────────────
+      - name: Verify signing & notarization
+        run: |
+          spctl --assess --type open --context context:primary-signature \
+            --verbose=2 "$DMG_NAME"
+
+      # ── 9. Publish GitHub Release ─────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_NAME }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 10. Cleanup temporary keychain ────────────────────────────────────
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/auth.p8"

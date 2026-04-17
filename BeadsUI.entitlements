@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Hardened Runtime entitlements for BeadsUI.
+
+        App Sandbox is intentionally DISABLED because BeadsUI:
+          - Shells out to the `bd` CLI tool (subprocess execution)
+          - Reads/writes arbitrary project directories chosen by the user
+
+        Notarization succeeds without sandboxing for developer tools.
+        Apple logs an informational note but does not block distribution.
+    -->
+
+    <!-- Allow spawning child processes (bd CLI) -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!-- Hardened Runtime: allow JIT only if ever needed (currently not) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+
+    <!-- Disable library validation so dynamically-loaded tools work -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+
+    <!--
+        User-selected file access: read/write to directories the user
+        opens via the folder picker (NSOpenPanel / file URLs).
+    -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Required to inherit parent shell environment via NSTask -->
+    <key>com.apple.security.inherit</key>
+    <false/>
+</dict>
+</plist>
