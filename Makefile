@@ -2,11 +2,12 @@
 # Compiles BeadsUI.swift into a macOS app bundle.
 #
 # Usage:
-#   make          — build BeadsUI.app
-#   make run      — build and open the app
-#   make icon     — convert BeadsUI.svg → BeadsUI.icns (requires: brew install librsvg)
-#   make clean    — remove the built app and icon scratch files
-#   make setup    — one-time repo setup (git hooks, bd bootstrap)
+#   make             — build native-arch BeadsUI.app (fast, for local dev)
+#   make universal   — build universal binary (arm64 + x86_64) via lipo
+#   make run         — build and open the app
+#   make icon        — convert BeadsUI.svg → BeadsUI.icns (requires: brew install librsvg)
+#   make clean       — remove the built app and icon scratch files
+#   make setup       — one-time repo setup (git hooks, bd bootstrap)
 
 APP_NAME  := BeadsUI
 BUNDLE    := $(APP_NAME).app
@@ -21,7 +22,7 @@ ARCH   := $(shell uname -m)
 TARGET := $(ARCH)-apple-macos13.0
 SDK    := $(shell xcrun --sdk macosx --show-sdk-path)
 
-.PHONY: all run icon clean setup
+.PHONY: all universal run icon clean setup
 
 all: $(BUNDLE)
 	@echo ""
@@ -77,6 +78,40 @@ setup:
 	@echo "→ Bootstrapping beads issue tracker…"
 	@bd bootstrap
 	@echo "✅  Setup complete."
+
+# ───────────────────────────────────────────────────────────────────────────
+# Universal binary: arm64 + x86_64 combined with lipo
+# Used by the CI release workflow; not needed for local dev
+# ───────────────────────────────────────────────────────────────────────────
+universal:
+	@echo "→ Compiling $(APP_NAME) for arm64…"
+	@mkdir -p $(BUNDLE)/Contents/MacOS $(RES_DIR)
+	swiftc \
+		-parse-as-library \
+		-sdk "$(SDK)" \
+		-target arm64-apple-macos13.0 \
+		-O \
+		-o "$(BINARY)-arm64" \
+		*.swift
+	@echo "→ Compiling $(APP_NAME) for x86_64…"
+	swiftc \
+		-parse-as-library \
+		-sdk "$(SDK)" \
+		-target x86_64-apple-macos13.0 \
+		-O \
+		-o "$(BINARY)-x86_64" \
+		*.swift
+	@echo "→ Creating universal binary with lipo…"
+	lipo -create -output "$(BINARY)" "$(BINARY)-arm64" "$(BINARY)-x86_64"
+	@rm "$(BINARY)-arm64" "$(BINARY)-x86_64"
+	@cp Info.plist "$(PLIST_DST)"
+	@if [ -f "$(ICNS)" ]; then \
+		cp "$(ICNS)" "$(RES_DIR)/AppIcon.icns"; \
+		echo "✓  Bundled icon: AppIcon.icns"; \
+	fi
+	@echo ""
+	@echo "✅  Built universal $(BUNDLE)  —  run with: make run"
+	@echo "    $(lipo -archs \"$(BINARY)\")"
 
 run: $(BUNDLE)
 	open "$(BUNDLE)"
