@@ -28,11 +28,17 @@ struct BeadsUIApp: App {
 // MARK: - Content View
 
 struct ContentView: View {
-    @AppStorage("workingDirectory") private var workingDirectory: String = ""
+    @SceneStorage("workingDirectory") private var workingDirectory: String = ""
     @AppStorage("recentProjects") private var recentProjectsJSON: String = "[]"
     @State private var showingCreateSheet = false
     @State private var issueRefreshTrigger = 0
     @State private var createSheetWidth: CGFloat = 600
+
+    private var windowTitle: String {
+        workingDirectory.isEmpty
+            ? "Beads Issues"
+            : URL(fileURLWithPath: workingDirectory).lastPathComponent + " \u{2014} Beads"
+    }
 
     private var recentProjects: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(recentProjectsJSON.utf8))) ?? []
@@ -58,6 +64,7 @@ struct ContentView: View {
         .onAppear {
             if !workingDirectory.isEmpty { addToRecents(workingDirectory) }
         }
+        .background(WindowTitleSetter(title: windowTitle))
         .sheet(isPresented: $showingCreateSheet, onDismiss: {
             issueRefreshTrigger += 1
         }) {
@@ -144,6 +151,21 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             workingDirectory = url.path
             addToRecents(url.path)
+        }
+    }
+}
+
+// MARK: - Window Title Setter
+
+/// Sets the NSWindow title reactively from SwiftUI state.
+/// Using NSViewRepresentable guarantees we have the correct window reference
+/// (NSApp.keyWindow is unreliable during onAppear / scene restore).
+struct WindowTitleSetter: NSViewRepresentable {
+    let title: String
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            nsView.window?.title = self.title
         }
     }
 }
