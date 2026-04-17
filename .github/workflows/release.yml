@@ -90,21 +90,23 @@ jobs:
           codesign --verify --deep --strict --verbose=2 BeadsUI.app
 
       # ── 5. Package into a DMG ─────────────────────────────────────────────
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Package DMG
         run: |
           VERSION="${GITHUB_REF_NAME}"   # e.g. v1.2.0
           DMG_NAME="BeadsUI-${VERSION}.dmg"
 
-          # Staging folder
-          mkdir -p dist
-          cp -r BeadsUI.app dist/
-
-          hdiutil create \
-            -volname "BeadsUI ${VERSION}" \
-            -srcfolder dist \
-            -ov \
-            -format UDZO \
-            "$DMG_NAME"
+          create-dmg \
+            --volname "BeadsUI ${VERSION}" \
+            --window-size 540 360 \
+            --icon-size 128 \
+            --icon "BeadsUI.app" 140 175 \
+            --app-drop-link 400 175 \
+            --hide-extension "BeadsUI.app" \
+            "$DMG_NAME" \
+            BeadsUI.app
 
           echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
 
