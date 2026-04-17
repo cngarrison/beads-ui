@@ -21,27 +21,140 @@ func formField<C: View>(
     }
 }
 
+// MARK: - Auto-Resizing Text Area
+
+/// AppKit-backed resize grip. Captures raw mouse events so it is unaffected by
+/// the enclosing ScrollView's gesture arbitration (which would cause half-speed
+/// dragging if we used SwiftUI DragGesture inside a ScrollView).
+private class ResizeHandleNSView: NSView {
+    var onDrag: (CGFloat) -> Void = { _ in }
+    var minHeight: CGFloat = 40
+    var currentHeight: CGFloat = 40
+    private var dragStartWindowY: CGFloat = 0
+    private var dragStartHeight:  CGFloat = 0
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.separatorColor.withAlphaComponent(0.35).setFill()
+        NSBezierPath(rect: bounds).fill()
+        NSColor.secondaryLabelColor.withAlphaComponent(0.45).setFill()
+        let cx = bounds.midX, cy = bounds.midY
+        for offsetX: CGFloat in [-22, 0, 22] {
+            NSBezierPath(
+                roundedRect: NSRect(x: cx + offsetX - 9, y: cy - 1, width: 18, height: 2),
+                xRadius: 1, yRadius: 1
+            ).fill()
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeUpDown)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartWindowY = event.locationInWindow.y
+        dragStartHeight  = currentHeight
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // AppKit y-axis increases upward; dragging down → y decreases → delta > 0 → taller
+        let delta  = dragStartWindowY - event.locationInWindow.y
+        let newH   = max(minHeight, dragStartHeight + delta)
+        DispatchQueue.main.async { self.onDrag(newH) }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: -1, height: 7) }
+    override var acceptsFirstResponder: Bool   { false }
+}
+
+private struct ResizeHandle: NSViewRepresentable {
+    @Binding var height:   CGFloat
+    @Binding var isManual: Bool
+    let minHeight: CGFloat
+
+    func makeNSView(context: Context) -> ResizeHandleNSView {
+        let v        = ResizeHandleNSView()
+        v.minHeight  = minHeight
+        v.onDrag     = { h in height = h; isManual = true }
+        return v
+    }
+
+    func updateNSView(_ v: ResizeHandleNSView, context: Context) {
+        v.currentHeight = height
+        v.minHeight     = minHeight
+    }
+}
+
+struct AutoResizingTextArea: View {
+    @Binding var text: String
+    var placeholder:   String
+    var minHeight:     CGFloat = 70
+    var maxAutoHeight: CGFloat = 220
+
+    @State private var height:    CGFloat
+    @State private var isManual   = false
+    @State private var viewWidth: CGFloat = 500
+
+    init(text: Binding<String>, placeholder: String,
+         minHeight: CGFloat = 70, maxAutoHeight: CGFloat = 220) {
+        self._text       = text
+        self.placeholder = placeholder
+        self.minHeight   = minHeight
+        self.maxAutoHeight = maxAutoHeight
+        self._height     = State(initialValue: minHeight)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(placeholder)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 6).padding(.vertical, 9)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $text)
+                    .scrollContentBackground(.hidden)
+                    .padding(4)
+                    .background(GeometryReader { geo in
+                        Color.clear
+                            .onAppear    { viewWidth = geo.size.width; autoSize() }
+                            .onChange(of: geo.size.width) { viewWidth = $0; autoSize() }
+                    })
+            }
+            .frame(height: height)
+
+            ResizeHandle(height: $height, isManual: $isManual, minHeight: minHeight)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+        )
+        .onChange(of: text) { _ in autoSize() }
+    }
+
+    /// Measures natural text height via NSString.boundingRect — matches
+    /// NSTextView's layout engine far better than a SwiftUI Text mirror.
+    private func autoSize() {
+        guard !isManual, viewWidth > 0 else { return }
+        let font    = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let str     = text.isEmpty ? " " : text
+        let maxW    = max(10, viewWidth - 24)   // subtract TextEditor internal insets
+        let rect    = (str as NSString).boundingRect(
+            with: CGSize(width: maxW, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+        let natural = ceil(rect.height) + 22    // add top+bottom inset
+        height = min(max(minHeight, natural), maxAutoHeight)
+    }
+}
+
 func formTextArea(
     _ text: Binding<String>,
     placeholder: String,
     height: CGFloat
 ) -> some View {
-    ZStack(alignment: .topLeading) {
-        if text.wrappedValue.isEmpty {
-            Text(placeholder)
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 6).padding(.vertical, 9)
-                .allowsHitTesting(false)
-        }
-        TextEditor(text: text)
-            .frame(height: height)
-            .scrollContentBackground(.hidden)
-            .padding(4)
-    }
-    .background(
-        RoundedRectangle(cornerRadius: 6)
-            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-    )
+    AutoResizingTextArea(text: text, placeholder: placeholder, minHeight: height)
 }
 
 // MARK: - Issue Form Content
