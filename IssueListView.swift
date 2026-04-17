@@ -88,6 +88,7 @@ struct IssueListView: View {
                 IssueRow(issue: issue, copiedID: $copiedID,
                          onEdit: { editIssue = issue },
                          onShowDetail: { detailIssue = issue },
+                         onClaim: { Task { await claimIssue(issue) } },
                          onClose: { Task { await closeIssue(issue) } })
             }
             .listStyle(.plain)
@@ -105,6 +106,18 @@ struct IssueListView: View {
                 .multilineTextAlignment(.center).frame(maxWidth: 300)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func claimIssue(_ issue: BeadsIssue) async {
+        let dir = workingDirectory
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try BeadsRunner.claim(id: issue.id, workingDirectory: dir)
+            }.value
+            await loadIssues()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func closeIssue(_ issue: BeadsIssue) async {
@@ -141,6 +154,7 @@ struct IssueRow: View {
     @Binding var copiedID: String?
     var onEdit: () -> Void = {}
     var onShowDetail: () -> Void = {}
+    var onClaim: () -> Void = {}
     var onClose: () -> Void = {}
 
     var body: some View {
@@ -175,12 +189,19 @@ struct IssueRow: View {
         .onTapGesture(count: 2) { onEdit() }
         .onTapGesture { copyID() }
         .contextMenu {
-            Button("Edit Issue") { onEdit() }
+            Button("Edit\u{2026}") { onEdit() }
             Button("View Detail") { onShowDetail() }
             Divider()
-            Button("Close Issue") { onClose() }
+            Button("Copy ID") { copyID() }
+            Button("Copy Title") { copyTitle() }
+            Divider()
+            Menu("Status") {
+                Button("Claim") { onClaim() }
+                Divider()
+                Button("Close") { onClose() }
+            }
         }
-        .help("Click to copy ID \u{00B7} Double-click to edit issue")
+        .help("Click to copy ID \u{00B7} Double-click to edit")
         .padding(.vertical, 2)
     }
 
@@ -208,6 +229,11 @@ struct IssueRow: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             if copiedID == issue.id { withAnimation { copiedID = nil } }
         }
+    }
+
+    private func copyTitle() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(issue.title, forType: .string)
     }
 }
 

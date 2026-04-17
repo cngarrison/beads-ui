@@ -208,6 +208,16 @@ enum BeadsRunner {
         }
     }
 
+    // MARK: Claim
+
+    static func claim(id: String, workingDirectory: String) throws {
+        let (stdout, stderr, status) = try run(["bd", "update", id, "--claim"], in: workingDirectory)
+        if status != 0 {
+            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
+        }
+    }
+
     // MARK: Close
 
     static func close(id: String, workingDirectory: String) throws {
