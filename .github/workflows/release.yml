@@ -136,7 +136,9 @@ jobs:
           xcrun stapler validate "$DMG_NAME"
 
           # Mount and verify the app bundle signature
-          MOUNT=$(hdiutil attach "$DMG_NAME" -nobrowse -readonly | tail -1 | awk '{print $NF}')
+          MOUNT="$RUNNER_TEMP/beads-verify"
+          mkdir -p "$MOUNT"
+          hdiutil attach "$DMG_NAME" -nobrowse -readonly -mountpoint "$MOUNT"
           spctl --assess --type open --context context:primary-signature \
             --verbose=2 "$MOUNT/BeadsUI.app"
           hdiutil detach "$MOUNT" -quiet
