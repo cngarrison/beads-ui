@@ -132,8 +132,14 @@ jobs:
       # ── 8. Verify (sanity check before publishing) ────────────────────────
       - name: Verify signing & notarization
         run: |
+          # Verify the DMG itself (notarization ticket stapled)
+          spctl --assess --type install --verbose=2 "$DMG_NAME"
+
+          # Mount and verify the app bundle inside
+          MOUNT=$(hdiutil attach "$DMG_NAME" -nobrowse -readonly | tail -1 | awk '{print $NF}')
           spctl --assess --type open --context context:primary-signature \
-            --verbose=2 "$DMG_NAME"
+            --verbose=2 "$MOUNT/BeadsUI.app"
+          hdiutil detach "$MOUNT" -quiet
 
       # ── 9. Publish GitHub Release ─────────────────────────────────────────
       - name: Create GitHub Release
