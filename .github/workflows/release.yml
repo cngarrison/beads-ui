@@ -63,7 +63,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
       # ── 3. Build ──────────────────────────────────────────────────────────
-      - name: Build BeadsUI.app (universal binary)
+      - name: Build BeadsTracker.app (universal binary)
         run: make universal
 
       # ── 4. Sign ───────────────────────────────────────────────────────────
@@ -81,13 +81,13 @@ jobs:
             --deep \
             --force \
             --options runtime \
-            --entitlements BeadsUI.entitlements \
+            --entitlements BeadsTracker.entitlements \
             --sign "$IDENTITY" \
             --timestamp \
-            BeadsUI.app
+            BeadsTracker.app
 
           # Verify
-          codesign --verify --deep --strict --verbose=2 BeadsUI.app
+          codesign --verify --deep --strict --verbose=2 BeadsTracker.app
 
       # ── 5. Package into a DMG ─────────────────────────────────────────────
       - name: Install create-dmg
@@ -96,17 +96,17 @@ jobs:
       - name: Package DMG
         run: |
           VERSION="${GITHUB_REF_NAME}"   # e.g. v1.2.0
-          DMG_NAME="BeadsUI-${VERSION}.dmg"
+          DMG_NAME="BeadsTracker-${VERSION}.dmg"
 
           create-dmg \
-            --volname "BeadsUI ${VERSION}" \
+            --volname "BeadsTracker ${VERSION}" \
             --window-size 540 360 \
             --icon-size 128 \
-            --icon "BeadsUI.app" 140 175 \
+            --icon "BeadsTracker.app" 140 175 \
             --app-drop-link 400 175 \
-            --hide-extension "BeadsUI.app" \
+            --hide-extension "BeadsTracker.app" \
             "$DMG_NAME" \
-            BeadsUI.app
+            BeadsTracker.app
 
           echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
 
@@ -144,7 +144,7 @@ jobs:
           mkdir -p "$MOUNT"
           hdiutil attach "$DMG_NAME" -nobrowse -readonly -mountpoint "$MOUNT"
           spctl --assess --type open --context context:primary-signature \
-            --verbose=2 "$MOUNT/BeadsUI.app"
+            --verbose=2 "$MOUNT/BeadsTracker.app"
           hdiutil detach "$MOUNT" -quiet
 
       # ── 9. Publish GitHub Release ─────────────────────────────────────────

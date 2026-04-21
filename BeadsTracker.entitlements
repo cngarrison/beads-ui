@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <!--
-        Hardened Runtime entitlements for BeadsUI.
+        Hardened Runtime entitlements for Beads Tracker.
 
-        App Sandbox is intentionally DISABLED because BeadsUI:
+        App Sandbox is intentionally DISABLED because Beads Tracker:
           - Shells out to the `bd` CLI tool (subprocess execution)
           - Reads/writes arbitrary project directories chosen by the user
 

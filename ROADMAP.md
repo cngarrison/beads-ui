@@ -1,4 +1,4 @@
-# BeadsUI Roadmap
+# Beads Tracker Roadmap
 
 This file tracks ideas for future development. Issues are also tracked in this repo's own beads database — run `bd list` to see them.
 

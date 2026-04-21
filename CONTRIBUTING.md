@@ -1,4 +1,4 @@
-# Contributing to BeadsUI
+# Contributing to Beads Tracker
 
 Thank you for your interest in contributing! This project started as a 30-minute experiment in AI-assisted development — and contributions made the same way are absolutely welcome. You don’t need to know Swift.
 
@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This project started as a 30-minute
 
 ## The spirit of this project
 
-BeadsUI is intentionally a **single-file SwiftUI app**. The entire application lives in `BeadsUI.swift`. This constraint is a feature: it keeps the codebase approachable for people who aren’t professional Swift developers, and it keeps the build system trivially simple (`make`).
+Beads Tracker is intentionally a **single-file SwiftUI app**. The entire application lives in `BeadsTracker.swift`. This constraint is a feature: it keeps the codebase approachable for people who aren’t professional Swift developers, and it keeps the build system trivially simple (`make`).
 
 Please maintain this constraint when contributing. If a feature genuinely can’t fit cleanly in one file, open an issue to discuss before splitting.
 
@@ -43,7 +43,7 @@ The [ROADMAP.md](ROADMAP.md) items are written to give enough context for an AI 
 
 ## Issue Tracker Sync
 
-BeadsUI uses [beads](https://github.com/cngarrison/beads) (`bd`) for issue tracking. Issues are stored in the Git repo under `refs/dolt/data` alongside the source code — no separate account or service needed.
+Beads Tracker uses [beads](https://github.com/cngarrison/beads) (`bd`) for issue tracking. Issues are stored in the Git repo under `refs/dolt/data` alongside the source code — no separate account or service needed.
 
 **First-time setup** (after cloning):
 ```bash
@@ -63,8 +63,8 @@ bd dolt push   # push your changes after creating/closing issues
 
 ```bash
 # Clone the repo
-git clone https://github.com/cngarrison/beads-ui.git
-cd beads-ui
+git clone https://github.com/cngarrison/beads-tracker.git
+cd beads-tracker
 
 # One-time setup: git hooks + issue tracker bootstrap
 make setup
@@ -92,13 +92,13 @@ xcode-select --install   # if you don’t have them already
 ## Project layout
 
 ```
-BeadsUI.swift     ── Entire application (keep it one file)
-Info.plist        ── App bundle metadata (rarely needs changing)
-Makefile          ── Build system + icon pipeline
-BeadsUI.svg       ── App icon source (edit to change the icon)
-README.md         ── User-facing docs
-ROADMAP.md        ── Feature ideas and backlog
-CONTRIBUTING.md   ── This file
+BeadsTracker.swift  ── Entire application (keep it one file)
+Info.plist          ── App bundle metadata (rarely needs changing)
+Makefile            ── Build system + icon pipeline
+BeadsTracker.svg    ── App icon source (edit to change the icon)
+README.md           ── User-facing docs
+ROADMAP.md          ── Feature ideas and backlog
+CONTRIBUTING.md     ── This file
 ```
 
 ---
@@ -107,7 +107,7 @@ CONTRIBUTING.md   ── This file
 
 There aren’t many rules, but please follow these:
 
-**Structure** — keep the existing section order in `BeadsUI.swift`:
+**Structure** — keep the existing section order in `BeadsTracker.swift`:
 1. App entry point (`@main`)
 2. Domain enums & models
 3. `BeadsRunner` (all `bd` CLI interaction)
@@ -133,7 +133,7 @@ There aren’t many rules, but please follow these:
 ## Submitting a PR
 
 1. Fork the repo and create a branch: `git checkout -b my-feature`
-2. Make your changes to `BeadsUI.swift` (and other files if needed)
+2. Make your changes to `BeadsTracker.swift` (and other files if needed)
 3. Confirm `make` succeeds with no errors
 4. Test the feature manually with a real beads repository
 5. Update `ROADMAP.md` to mark the item as done (or remove it)

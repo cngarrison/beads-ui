@@ -7,7 +7,7 @@ import AppKit
 // MARK: - App Entry Point
 
 @main
-struct BeadsUIApp: App {
+struct BeadsTrackerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
@@ -18,7 +18,7 @@ struct BeadsUIApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Beads Issues") {
+        WindowGroup("Beads Tracker") {
             ContentView()
         }
         .defaultSize(width: 920, height: 780)
@@ -36,7 +36,7 @@ struct ContentView: View {
 
     private var windowTitle: String {
         workingDirectory.isEmpty
-            ? "Beads Issues"
+            ? "Beads Tracker"
             : URL(fileURLWithPath: workingDirectory).lastPathComponent + " \u{2014} Beads"
     }
 

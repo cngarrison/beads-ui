@@ -1,8 +1,8 @@
-# BeadsUI
+# Beads Tracker
 
 A native macOS app for creating and viewing issues in the [beads](https://steveyegge.github.io/beads/) (`bd`) issue tracking system — no CLI required.
 
-<img src="BeadsUI.svg" alt="BeadsUI icon" width="96"/>
+<img src="BeadsTracker.svg" alt="Beads Tracker icon" width="96"/>
 
 ---
 
@@ -14,8 +14,8 @@ A native macOS app for creating and viewing issues in the [beads](https://stevey
     <td align="center"><strong>Issues tab</strong></td>
   </tr>
   <tr>
-    <td><img src="beads-ui-create.png" alt="Create tab" width="480"/></td>
-    <td><img src="beads-ui-issues.png" alt="Issues tab" width="480"/></td>
+    <td><img src="beads-tracker-create.png" alt="Create tab" width="480"/></td>
+    <td><img src="beads-tracker-issues.png" alt="Issues tab" width="480"/></td>
   </tr>
 </table>
 
@@ -23,7 +23,7 @@ A native macOS app for creating and viewing issues in the [beads](https://stevey
 
 ## What it does
 
-`bd` is a powerful local-first issue tracker, but its interface is the terminal. BeadsUI wraps the most common workflows in a clean SwiftUI window:
+`bd` is a powerful local-first issue tracker, but its interface is the terminal. Beads Tracker wraps the most common workflows in a clean SwiftUI window:
 
 - **Create issues** via a form that mirrors `bd create-form` — title, description, type, priority, assignee, labels, external reference, design notes, acceptance criteria, and dependencies
 - **Browse open issues** in a live list with status indicators, priority badges, and one-click ID copying
@@ -50,11 +50,11 @@ brew install librsvg   # provides rsvg-convert
 
 ```bash
 # Clone or download this repo, then:
-cd beads-ui
+cd beads-tracker
 
-make          # compiles BeadsUI.swift → BeadsUI.app
+make          # compiles BeadsTracker.swift → BeadsTracker.app
 make run      # compiles + opens the app
-make clean    # removes BeadsUI.app
+make clean    # removes BeadsTracker.app
 ```
 
 The `Makefile` auto-detects your CPU architecture (`arm64` on Apple Silicon, `x86_64` on Intel) so no configuration is needed.
@@ -82,7 +82,7 @@ Click **Choose…** in the top bar and navigate to any directory that contains a
 
 ### Creating an issue
 
-![Create tab](beads-ui-create.png)
+![Create tab](beads-tracker-create.png)
 
 Switch to the **Create** tab. Fill in at minimum the **Title** field (marked `*`), then press **Create Issue** or hit `⌘↵`.
 
@@ -105,7 +105,7 @@ Field reference:
 
 ### Browsing issues
 
-![Issues tab](beads-ui-issues.png)
+![Issues tab](beads-tracker-issues.png)
 
 Switch to the **Issues** tab. The list loads automatically when you switch tabs or change the working directory. Click **Refresh** (↺) to reload. Click any row to copy its ID to the clipboard.
 
@@ -114,11 +114,11 @@ Switch to the **Issues** tab. The list loads automatically when you switch tabs 
 ## Project structure
 
 ```
-beads-ui/
-├── BeadsUI.swift     # Entire app — one file
-├── Info.plist        # App bundle metadata
-├── Makefile          # Build + icon pipeline
-├── BeadsUI.svg       # App icon source
+beads-tracker/
+├── BeadsTracker.swift  # Entire app — one file
+├── Info.plist          # App bundle metadata
+├── Makefile            # Build + icon pipeline
+├── BeadsTracker.svg    # App icon source
 └── README.md
 ```
 
@@ -130,7 +130,7 @@ There is no Xcode project, no Swift Package Manager manifest, no third-party dep
 
 ### Background
 
-`beads` (`bd`) is a local-first, git-backed issue tracker that stores everything in a Dolt database inside your repository. It's fast and powerful, but entirely CLI-driven. The idea for BeadsUI was simple: make it easier to file issues without leaving a GUI context — the same way GitHub Issues or Linear let you create tickets without touching a terminal.
+`beads` (`bd`) is a local-first, git-backed issue tracker that stores everything in a Dolt database inside your repository. It's fast and powerful, but entirely CLI-driven. The idea for Beads Tracker was simple: make it easier to file issues without leaving a GUI context — the same way GitHub Issues or Linear let you create tickets without touching a terminal.
 
 ### The experiment
 
@@ -147,14 +147,14 @@ The session began with a single prompt explaining the goal and sharing:
 - A preference for a compiled `.app` bundle via a `Makefile` rather than a full Xcode project
 - The desired field scope (matching `bd create-form`), a folder picker for repo selection, and a success banner with a Copy ID button
 
-Claude asked five clarifying questions — delivery format, PATH assumptions, field scope, working directory persistence, and post-submission behaviour — and then produced all three files (`BeadsUI.swift`, `Info.plist`, `Makefile`) in a single pass.
+Claude asked five clarifying questions — delivery format, PATH assumptions, field scope, working directory persistence, and post-submission behaviour — and then produced all three files (`BeadsTracker.swift`, `Info.plist`, `Makefile`) in a single pass.
 
 ### Errors encountered
 
 **Compile error #1 — the only error on first build:**
 
 ```
-BeadsUI.swift:315: error: 'monospaced' is only available in macOS 13.3 or newer
+BeadsTracker.swift:315: error: 'monospaced' is only available in macOS 13.3 or newer
 ```
 
 The fix was a one-liner: replace `.monospaced()` (added in 13.3) with `.font(.system(.body, design: .monospaced))` (available since macOS 12). One search-replace, recompile, done.
@@ -167,7 +167,7 @@ This took two iterations to resolve:
 
 2. **Wrong output format.** Even with the escape fixed, nothing matched. Running `bd list --flat | cat -v` revealed the actual output format:
    ```
-   ○ beads-ui-e4l [● P2] [task] - Add icon for the app
+   ○ bt-e4l [● P2] [task] - Add icon for the app
    ```
    The original regex assumed `○ id ● P2 title` (no brackets, no type field). The real format has `[● P2] [task] -` between the ID and the title. A regex rewrite against the real format fixed it immediately.
 

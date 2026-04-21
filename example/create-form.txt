@@ -54,7 +54,7 @@
 
 ---
 
-✓ Created issue: beads-ui-beb — Create UI for `bd create-form`
+✓ Created issue: bt-beb — Create UI for `bd create-form`
   Type:     task
   Priority: P2
   Status:   open

@@ -1,15 +1,15 @@
-# Makefile — BeadsUI
-# Compiles BeadsUI.swift into a macOS app bundle.
+# Makefile — BeadsTracker
+# Compiles BeadsTracker.swift into a macOS app bundle.
 #
 # Usage:
-#   make             — build native-arch BeadsUI.app (fast, for local dev)
+#   make             — build native-arch BeadsTracker.app (fast, for local dev)
 #   make universal   — build universal binary (arm64 + x86_64) via lipo
 #   make run         — build and open the app
-#   make icon        — convert BeadsUI.svg → BeadsUI.icns (requires: brew install librsvg)
+#   make icon        — convert BeadsTracker.svg → BeadsTracker.icns (requires: brew install librsvg)
 #   make clean       — remove the built app and icon scratch files
 #   make setup       — one-time repo setup (git hooks, bd bootstrap)
 
-APP_NAME  := BeadsUI
+APP_NAME  := BeadsTracker
 BUNDLE    := $(APP_NAME).app
 BINARY    := $(BUNDLE)/Contents/MacOS/$(APP_NAME)
 PLIST_DST := $(BUNDLE)/Contents/Info.plist
@@ -53,12 +53,12 @@ $(BUNDLE): $(wildcard *.swift) Info.plist
 icon: $(ICNS)
 	@echo "✅  $(ICNS) ready — rebuild the app bundle with: make"
 
-$(ICNS): BeadsUI.svg
+$(ICNS): BeadsTracker.svg
 	@echo "→ Converting SVG → PNG → .icns…"
 	@command -v rsvg-convert >/dev/null 2>&1 || \
 		{ echo "❌ rsvg-convert not found. Install with: brew install librsvg"; exit 1; }
 	@mkdir -p $(ICONSET)
-	@rsvg-convert -w 1024 -h 1024 BeadsUI.svg -o _icon_1024.png
+	@rsvg-convert -w 1024 -h 1024 BeadsTracker.svg -o _icon_1024.png
 	@sips -z 16   16   _icon_1024.png --out $(ICONSET)/icon_16x16.png    > /dev/null
 	@sips -z 32   32   _icon_1024.png --out $(ICONSET)/icon_16x16@2x.png > /dev/null
 	@sips -z 32   32   _icon_1024.png --out $(ICONSET)/icon_32x32.png    > /dev/null
