@@ -223,7 +223,7 @@ struct IssueListView: View {
                 Spacer()
                 if !panelContents.isEmpty && !panelLoading {
                     Button {
-                        let markdown = panelContents.map { detailToMarkdown($0) }.joined(separator: "\n---\n")
+                        let markdown = panelContents.map { detailToMarkdown($0) }.joined(separator: "\n\n---\n\n")
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(markdown, forType: .string)
                     } label: {
@@ -313,7 +313,7 @@ struct IssueListView: View {
             }
         }
         let ordered = ids.compactMap { id in results.first { $0.0 == id } }
-        let markdown = ordered.map { "# \($0.0): \($0.1)\n\($0.2)" }.joined(separator: "\n---\n")
+        let markdown = ordered.map { "# \($0.0): \($0.1)\n\($0.2)" }.joined(separator: "\n\n---\n\n")
         await MainActor.run {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(markdown, forType: .string)
@@ -417,15 +417,31 @@ struct IssueListView: View {
 
 struct IssueDetailCard: View {
     let detail: BeadsIssueDetail
+    @State private var isHoveringID = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header: ID + title
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Text(detail.id)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text(detail.id)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        if isHoveringID {
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(detail.id, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.clipboard")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Copy issue ID")
+                        }
+                    }
+                    .onHover { inside in isHoveringID = inside }
                     statusBadge
                     priorityBadge
                     if let type_ = detail.issueType {
@@ -529,6 +545,7 @@ struct IssueDetailCard: View {
                 }
             }
         }
+        .textSelection(.enabled)
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -826,9 +843,11 @@ struct RelationSection: View {
                     Text(item.id)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                     Text(item.title)
                         .font(.callout)
                         .lineLimit(2)
+                        .textSelection(.enabled)
                     Spacer()
                     Text("P\(item.priority)")
                         .font(.caption2)
