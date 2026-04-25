@@ -3,12 +3,14 @@
 
 import SwiftUI
 import AppKit
+import WebKit
 
 // MARK: - Issue List View
 
 struct IssueListView: View {
     let workingDirectory: String
     var refreshTrigger: Int = 0
+    @Binding var detailPanelWidth: Double
 
     @State private var issues:       [BeadsIssue] = []
     @State private var isLoading     = false
@@ -18,15 +20,70 @@ struct IssueListView: View {
     @State private var detailIssue:  BeadsIssue? = nil
     @State private var editIssue:    BeadsIssue? = nil
 
+    // Multi-select
+    @State private var selectedIDs: Set<String> = []
+
+    // Copy details toolbar feedback
+    @State private var isCopyingDetails = false
+    @State private var showCopied = false
+
+    // Detail panel
+    @State private var showDetailPanel = true
+    @State private var panelContents: [BeadsIssueDetail] = []
+    @State private var panelLoading = false
+    @State private var panelLoadingProgress: Int = 0
+    @State private var panelError: String? = nil
+    @State private var detailLoadTask: Task<Void, Never>? = nil
+    @FocusState private var listFocused: Bool
+
     var body: some View {
-        VStack(spacing: 0) {
-            listToolbar
-            Divider()
-            listContent
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                listToolbar
+                Divider()
+                listContent
+            }
+            .frame(minWidth: 200)
+
+            if showDetailPanel {
+                // Drag handle
+                ZStack {
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(width: 1)
+                    Rectangle()
+                        .fill(Color.clear)
+                        .frame(width: 16)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 1)
+                                .onChanged { value in
+                                    let newWidth = detailPanelWidth - value.translation.width
+                                    detailPanelWidth = max(280, min(1100, newWidth))
+                                }
+                        )
+                        .onHover { inside in
+                            if inside { NSCursor.resizeLeftRight.push() }
+                            else { NSCursor.pop() }
+                        }
+                }
+                .frame(width: 16)
+
+                detailPanel
+                    .frame(width: CGFloat(detailPanelWidth))
+            }
         }
         .task { await loadIssues() }
         .onChange(of: workingDirectory) { newDir in Task { await loadIssues(dir: newDir) } }
         .onChange(of: refreshTrigger) { _ in Task { await loadIssues() } }
+        .onChange(of: selectedIDs) { _ in
+            detailLoadTask?.cancel()
+            detailLoadTask = Task {
+                try? await Task.sleep(nanoseconds: 200_000_000) // 200ms debounce
+                guard !Task.isCancelled else { return }
+                await loadPanelDetails()
+            }
+        }
         .sheet(item: $detailIssue) { issue in
             IssueDetailSheet(issue: issue, workingDirectory: workingDirectory)
         }
@@ -41,6 +98,8 @@ struct IssueListView: View {
         }
     }
 
+    // MARK: - Toolbar
+
     private var listToolbar: some View {
         HStack {
             if !issues.isEmpty {
@@ -48,6 +107,31 @@ struct IssueListView: View {
                     .foregroundStyle(.secondary).font(.subheadline)
             }
             Spacer()
+
+            // Copy feedback
+            if isCopyingDetails {
+                ProgressView().scaleEffect(0.7).padding(.trailing, 2)
+            } else if showCopied {
+                Text("Copied!").font(.caption).foregroundStyle(.green)
+            }
+
+            Button {
+                Task { await copyDetailsAsMarkdown(ids: Array(selectedIDs)) }
+            } label: {
+                Label("Copy Details", systemImage: "doc.on.clipboard")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(selectedIDs.isEmpty || isCopyingDetails)
+            .help("Copy details of selected issues as Markdown")
+
+            Button {
+                withAnimation { showDetailPanel.toggle() }
+            } label: {
+                Label("Toggle Panel", systemImage: "sidebar.right")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .help(showDetailPanel ? "Hide detail panel" : "Show detail panel")
+
             Button { Task { await loadIssues() } } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
@@ -57,6 +141,8 @@ struct IssueListView: View {
         .padding(.horizontal).padding(.vertical, 8)
         .background(.bar)
     }
+
+    // MARK: - List Content
 
     @ViewBuilder
     private var listContent: some View {
@@ -84,19 +170,118 @@ struct IssueListView: View {
                        title: "No Issues",
                        message: "This repository has no open issues.")
         } else {
-            List(issues, children: \.children) { issue in
+            List(issues, children: \.children, selection: $selectedIDs) { issue in
                 IssueRow(issue: issue, copiedID: $copiedID,
+                         showDetailPanel: showDetailPanel,
                          onEdit: { editIssue = issue },
                          onShowDetail: { detailIssue = issue },
                          onClaim: { Task { await claimIssue(issue) } },
-                         onClose: { Task { await closeIssue(issue) } })
+                         onClose: { Task { await closeIssue(issue) } },
+                         onCopyDetails: {
+                             let ids: [String]
+                             if selectedIDs.contains(issue.id) {
+                                 ids = Array(selectedIDs)
+                             } else {
+                                 ids = [issue.id]
+                             }
+                             Task { await copyDetailsAsMarkdown(ids: ids) }
+                         },
+                         onSelect: {
+                             let cmdHeld = NSEvent.modifierFlags.contains(.command)
+                             if cmdHeld {
+                                 if selectedIDs.contains(issue.id) {
+                                     selectedIDs.remove(issue.id)
+                                 } else {
+                                     selectedIDs.insert(issue.id)
+                                 }
+                             } else {
+                                 selectedIDs = [issue.id]
+                             }
+                             listFocused = true
+                         })
             }
             .listStyle(.plain)
-            .background(
-
-            )
+            .focused($listFocused)
         }
     }
+
+    // MARK: - Detail Panel
+
+    private var detailPanel: some View {
+        VStack(spacing: 0) {
+            // Panel header bar
+            HStack {
+                Text("Detail")
+                    .font(.subheadline).fontWeight(.semibold)
+                if selectedIDs.count > 1 {
+                    Text("\(selectedIDs.count)")
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.accentColor, in: Capsule())
+                }
+                Spacer()
+                if !panelContents.isEmpty && !panelLoading {
+                    Button {
+                        let markdown = panelContents.map { detailToMarkdown($0) }.joined(separator: "\n---\n")
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(markdown, forType: .string)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.clipboard")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Copy loaded details as Markdown")
+                }
+            }
+            .padding(.horizontal).padding(.vertical, 8)
+            .background(.bar)
+
+            Divider()
+
+            if selectedIDs.isEmpty {
+                VStack {
+                    Text("Select an issue to view details")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if panelLoading {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Loading... (\(panelLoadingProgress)/\(selectedIDs.count))")
+                        .foregroundStyle(.secondary).font(.subheadline)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let err = panelError {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28)).foregroundStyle(.orange)
+                    Text(err)
+                        .foregroundStyle(.secondary).font(.caption)
+                        .multilineTextAlignment(.center)
+                }
+                .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if panelContents.isEmpty {
+                // Brief transitional state while debounce fires
+                VStack { ProgressView() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(panelContents, id: \.id) { detail in
+                            IssueDetailCard(detail: detail)
+                            if detail.id != panelContents.last?.id {
+                                Divider().padding(.vertical, 4)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Helpers
 
     private func emptyState(icon: String, title: String, message: String) -> some View {
         VStack(spacing: 12) {
@@ -106,6 +291,87 @@ struct IssueListView: View {
                 .multilineTextAlignment(.center).frame(maxWidth: 300)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func copyDetailsAsMarkdown(ids: [String]) async {
+        guard !ids.isEmpty else { return }
+        let issueMap = flatIssues()
+        let dir = workingDirectory
+        isCopyingDetails = true
+        showCopied = false
+        var results: [(String, String, String)] = []
+        await withTaskGroup(of: (String, String, String)?.self) { group in
+            for id in ids {
+                let title = issueMap[id]?.title ?? id
+                group.addTask {
+                    guard let text = try? BeadsRunner.show(id: id, workingDirectory: dir) else { return nil }
+                    return (id, title, text)
+                }
+            }
+            for await result in group {
+                if let r = result { results.append(r) }
+            }
+        }
+        let ordered = ids.compactMap { id in results.first { $0.0 == id } }
+        let markdown = ordered.map { "# \($0.0): \($0.1)\n\($0.2)" }.joined(separator: "\n---\n")
+        await MainActor.run {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(markdown, forType: .string)
+            isCopyingDetails = false
+            showCopied = true
+        }
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        await MainActor.run { showCopied = false }
+    }
+
+    private func loadPanelDetails() async {
+        let ids = Array(selectedIDs)
+        guard !ids.isEmpty else {
+            await MainActor.run { panelContents = [] }
+            return
+        }
+        await MainActor.run { panelLoading = true; panelLoadingProgress = 0; panelError = nil }
+        let dir = workingDirectory
+        var results: [(String, BeadsIssueDetail)] = []
+        await withTaskGroup(of: (String, BeadsIssueDetail)?.self) { group in
+            for id in ids {
+                group.addTask {
+                    guard let detail = try? BeadsRunner.showDetail(id: id, workingDirectory: dir) else { return nil }
+                    return (id, detail)
+                }
+            }
+            for await result in group {
+                if let r = result {
+                    results.append(r)
+                    await MainActor.run { panelLoadingProgress += 1 }
+                }
+            }
+        }
+        let ordered = ids.compactMap { id in results.first { $0.0 == id }?.1 }
+        await MainActor.run {
+            panelContents = ordered
+            panelLoading = false
+        }
+    }
+
+    private func detailToMarkdown(_ detail: BeadsIssueDetail) -> String {
+        var parts: [String] = []
+        parts.append("# \(detail.id): \(detail.title)")
+        parts.append("Status: \(detail.status) \u{00B7} Priority: P\(detail.priority)" +
+            (detail.issueType.map { " \u{00B7} \($0)" } ?? ""))
+        if let desc = detail.description, !desc.isEmpty { parts.append("## Description\n\(desc)") }
+        if let ac = detail.acceptanceCriteria, !ac.isEmpty { parts.append("## Acceptance Criteria\n\(ac)") }
+        if let notes = detail.notes, !notes.isEmpty { parts.append("## Notes\n\(notes)") }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private func flatIssues(_ list: [BeadsIssue]? = nil) -> [String: BeadsIssue] {
+        var map: [String: BeadsIssue] = [:]
+        func walk(_ items: [BeadsIssue]) {
+            for i in items { map[i.id] = i; if let c = i.children { walk(c) } }
+        }
+        walk(list ?? issues)
+        return map
     }
 
     private func claimIssue(_ issue: BeadsIssue) async {
@@ -147,15 +413,444 @@ struct IssueListView: View {
     }
 }
 
+// MARK: - Issue Detail Card (rich panel renderer)
+
+struct IssueDetailCard: View {
+    let detail: BeadsIssueDetail
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header: ID + title
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(detail.id)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    statusBadge
+                    priorityBadge
+                    if let type_ = detail.issueType {
+                        Text(type_)
+                            .font(.caption2).fontWeight(.medium)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+                    }
+                    Spacer()
+                }
+                Text(detail.title)
+                    .font(.headline)
+                    .textSelection(.enabled)
+            }
+
+            // Metadata row
+            if detail.owner != nil || detail.assignee != nil || !(detail.labels ?? []).isEmpty {
+                HStack(spacing: 12) {
+                    if let person = detail.assignee ?? detail.owner {
+                        Label(person, systemImage: "person")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if let labels = detail.labels, !labels.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "tag").font(.caption2)
+                            Text(labels.joined(separator: ", ")).font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+
+            // Description
+            if let desc = detail.description, !desc.isEmpty {
+                MarkdownSection(title: "Description", markdown: desc)
+            }
+
+            // Design notes
+            if let design = detail.design, !design.isEmpty {
+                MarkdownSection(title: "Design", markdown: design)
+            }
+
+            // Acceptance Criteria
+            if let ac = detail.acceptanceCriteria, !ac.isEmpty {
+                MarkdownSection(title: "Acceptance Criteria", markdown: ac)
+            }
+
+            // Notes
+            if let notes = detail.notes, !notes.isEmpty {
+                MarkdownSection(title: "Notes", markdown: notes)
+            }
+
+            // Parent
+            let parent = detail.dependencies?.first(where: { $0.dependencyType == "parent-child" })
+            if let parent {
+                RelationSection(title: "Parent", items: [parent], symbol: "arrow.up")
+            }
+
+            // Blocks (things this issue blocks — in dependents)
+            let blocks = detail.dependents?.filter { $0.dependencyType == "blocks" } ?? []
+            if !blocks.isEmpty {
+                RelationSection(title: "Blocks", items: blocks, symbol: "arrow.backward")
+            }
+
+            // Children (parent-child dependents)
+            let children = detail.dependents?.filter { $0.dependencyType == "parent-child" } ?? []
+            if !children.isEmpty {
+                RelationSection(title: "Children", items: children, symbol: "arrow.down")
+            }
+
+            // Other dependencies (non-parent upstream)
+            let otherDeps = detail.dependencies?.filter { $0.dependencyType != "parent-child" } ?? []
+            if !otherDeps.isEmpty {
+                RelationSection(title: "Dependencies", items: otherDeps, symbol: "link")
+            }
+
+            // Comments
+            if let comments = detail.comments, !comments.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Comments")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    ForEach(comments) { comment in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(comment.author).font(.caption).fontWeight(.medium)
+                                Spacer()
+                                Text(comment.createdAt).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Text(comment.text).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(8)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var statusBadge: some View {
+        let (symbol, color): (String, Color) = {
+            switch detail.status {
+            case "open":        return ("\u{25CB}", .primary)
+            case "in_progress": return ("\u{25D0}", .blue)
+            case "closed":      return ("\u{2713}", .green)
+            case "deferred":    return ("\u{2744}", .purple)
+            default:            return ("\u{25CF}", .orange)
+            }
+        }()
+        return Text(symbol)
+            .font(.caption)
+            .foregroundStyle(color)
+    }
+
+    private var priorityBadge: some View {
+        let color: Color = {
+            switch detail.priority {
+            case 0: return .red
+            case 1: return .orange
+            case 2: return .blue
+            case 3: return .teal
+            default: return .secondary
+            }
+        }()
+        return Text("P\(detail.priority)")
+            .font(.caption2).fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(color, in: Capsule())
+    }
+}
+
+struct MarkdownSection: View {
+    let title: String
+    let markdown: String
+    @State private var renderedHeight: CGFloat = 40
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            MarkdownWebView(markdown: markdown, height: $renderedHeight)
+                .frame(height: renderedHeight)
+        }
+    }
+}
+
+// MARK: - Markdown Web Renderer
+
+/// WKWebView subclass that forwards scroll events to the parent ScrollView
+/// instead of consuming them, so the SwiftUI ScrollView stays in control.
+class NonScrollingWebView: WKWebView {
+    override func scrollWheel(with event: NSEvent) {
+        nextResponder?.scrollWheel(with: event)
+    }
+}
+
+struct MarkdownWebView: NSViewRepresentable {
+    let markdown: String
+    @Binding var height: CGFloat
+
+    func makeCoordinator() -> Coordinator { Coordinator(height: $height) }
+
+    func makeNSView(context: Context) -> NonScrollingWebView {
+        let prefs = WKWebpagePreferences()
+        prefs.allowsContentJavaScript = true
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences = prefs
+        let webView = NonScrollingWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.setValue(false, forKey: "drawsBackground")
+        return webView
+    }
+
+    func updateNSView(_ webView: NonScrollingWebView, context: Context) {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        webView.loadHTMLString(markdownHTML(markdown, dark: isDark), baseURL: nil)
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+        @Binding var height: CGFloat
+        init(height: Binding<CGFloat>) { _height = height }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.evaluateJavaScript("document.documentElement.scrollHeight") { result, _ in
+                if let h = result as? CGFloat {
+                    DispatchQueue.main.async { self.height = max(20, h) }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Markdown → HTML
+
+private func markdownHTML(_ md: String, dark: Bool) -> String {
+    """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  font-size: 13px;
+  line-height: 1.55;
+  color: \(dark ? "#ddd" : "#222");
+  background: transparent;
+  padding: 0;
+  word-wrap: break-word;
+}
+p { margin: 0.5em 0; }
+h1 { font-size: 1.3em; font-weight: 700; margin: 0.8em 0 0.3em; }
+h2 { font-size: 1.1em; font-weight: 600; margin: 0.8em 0 0.3em; }
+h3 { font-size: 1.0em; font-weight: 600; margin: 0.6em 0 0.2em; color: \(dark ? "#aaa" : "#555"); }
+ul, ol { padding-left: 1.4em; margin: 0.4em 0; }
+li { margin: 0.15em 0; }
+code {
+  font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+  background: \(dark ? "#2d2d2d" : "#f0f0f0");
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+pre {
+  background: \(dark ? "#1e1e1e" : "#f5f5f5");
+  border: 1px solid \(dark ? "#3a3a3a" : "#e0e0e0");
+  border-radius: 5px;
+  padding: 0.7em 0.9em;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.85em;
+  color: \(dark ? "#ccc" : "#333");
+}
+blockquote {
+  border-left: 3px solid \(dark ? "#555" : "#ccc");
+  padding-left: 0.8em;
+  color: \(dark ? "#999" : "#666");
+  margin: 0.4em 0;
+}
+strong { font-weight: 600; }
+em { font-style: italic; }
+a { color: \(dark ? "#7ab3f5" : "#0066cc"); text-decoration: none; }
+</style>
+</head>
+<body>\(convertMarkdownToHTML(md))</body>
+</html>
+"""
+}
+
+private func convertMarkdownToHTML(_ md: String) -> String {
+    var html = ""
+    let lines = md.components(separatedBy: "\n")
+    var i = 0
+    var inUL = false
+    var inOL = false
+
+    func closeLists() {
+        if inUL { html += "</ul>\n"; inUL = false }
+        if inOL { html += "</ol>\n"; inOL = false }
+    }
+
+    while i < lines.count {
+        let raw = lines[i]
+        let line = raw
+
+        // Fenced code block
+        if line.hasPrefix("```") {
+            closeLists()
+            let lang = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            var codeLines: [String] = []
+            i += 1
+            while i < lines.count && !lines[i].hasPrefix("```") {
+                codeLines.append(lines[i])
+                i += 1
+            }
+            let escaped = codeLines.joined(separator: "\n")
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            html += "<pre><code class=\"language-\(htmlEscape(lang))\">\(escaped)</code></pre>\n"
+            i += 1
+            continue
+        }
+
+        // ATX headings
+        if line.hasPrefix("### ") {
+            closeLists()
+            html += "<h3>\(inlineMarkdown(String(line.dropFirst(4))))</h3>\n"
+        } else if line.hasPrefix("## ") {
+            closeLists()
+            html += "<h2>\(inlineMarkdown(String(line.dropFirst(3))))</h2>\n"
+        } else if line.hasPrefix("# ") {
+            closeLists()
+            html += "<h1>\(inlineMarkdown(String(line.dropFirst(2))))</h1>\n"
+        }
+        // Unordered list
+        else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+            if inOL { html += "</ol>\n"; inOL = false }
+            if !inUL { html += "<ul>\n"; inUL = true }
+            let content = line.hasPrefix("- ") ? String(line.dropFirst(2)) : String(line.dropFirst(2))
+            html += "<li>\(inlineMarkdown(content))</li>\n"
+        }
+        // Ordered list
+        else if let match = line.range(of: #"^\d+\. "#, options: .regularExpression) {
+            if inUL { html += "</ul>\n"; inUL = false }
+            if !inOL { html += "<ol>\n"; inOL = true }
+            let content = String(line[match.upperBound...])
+            html += "<li>\(inlineMarkdown(content))</li>\n"
+        }
+        // Blockquote
+        else if line.hasPrefix("> ") {
+            closeLists()
+            html += "<blockquote>\(inlineMarkdown(String(line.dropFirst(2))))</blockquote>\n"
+        }
+        // Blank line
+        else if line.trimmingCharacters(in: .whitespaces).isEmpty {
+            closeLists()
+            html += "<p></p>\n"
+        }
+        // Regular paragraph line
+        else {
+            closeLists()
+            html += "<p>\(inlineMarkdown(line))</p>\n"
+        }
+
+        i += 1
+    }
+    closeLists()
+    return html
+}
+
+/// Convert inline markdown within a single line (bold, italic, inline code, links).
+private func inlineMarkdown(_ text: String) -> String {
+    var s = htmlEscape(text)
+    // Inline code (must come before bold/italic to avoid double-processing)
+    s = applyPattern(s, pattern: "`([^`]+)`", template: "<code>$1</code>")
+    // Bold+italic
+    s = applyPattern(s, pattern: "\\*\\*\\*(.+?)\\*\\*\\*", template: "<strong><em>$1</em></strong>")
+    // Bold
+    s = applyPattern(s, pattern: "\\*\\*(.+?)\\*\\*", template: "<strong>$1</strong>")
+    s = applyPattern(s, pattern: "__(.+?)__", template: "<strong>$1</strong>")
+    // Italic
+    s = applyPattern(s, pattern: "\\*([^*]+)\\*", template: "<em>$1</em>")
+    s = applyPattern(s, pattern: "_([^_]+)_", template: "<em>$1</em>")
+    // Links
+    s = applyPattern(s, pattern: "\\[([^\\]]+)\\]\\(([^)]+)\\)", template: "<a href=\"$2\">$1</a>")
+    return s
+}
+
+private func htmlEscape(_ s: String) -> String {
+    s.replacingOccurrences(of: "&", with: "&amp;")
+     .replacingOccurrences(of: "<", with: "&lt;")
+     .replacingOccurrences(of: ">", with: "&gt;")
+     .replacingOccurrences(of: "\"", with: "&quot;")
+}
+
+private func applyPattern(_ input: String, pattern: String, template: String) -> String {
+    guard let re = try? NSRegularExpression(pattern: pattern, options: []) else { return input }
+    let range = NSRange(input.startIndex..., in: input)
+    return re.stringByReplacingMatches(in: input, options: [], range: range, withTemplate: template)
+}
+
+struct RelationSection: View {
+    let title: String
+    let items: [BeadsDependency]
+    let symbol: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            ForEach(items) { item in
+                HStack(spacing: 6) {
+                    Image(systemName: symbol).font(.caption2).foregroundStyle(.secondary)
+                    Text(item.id)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(item.title)
+                        .font(.callout)
+                        .lineLimit(2)
+                    Spacer()
+                    Text("P\(item.priority)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Issue Row
 
 struct IssueRow: View {
     let issue: BeadsIssue
     @Binding var copiedID: String?
+    var showDetailPanel: Bool = false
     var onEdit: () -> Void = {}
     var onShowDetail: () -> Void = {}
     var onClaim: () -> Void = {}
     var onClose: () -> Void = {}
+    var onCopyDetails: () -> Void = {}
+    var onSelect: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 10) {
@@ -187,13 +882,20 @@ struct IssueRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { onEdit() }
-        .onTapGesture { copyID() }
+        .onTapGesture {
+            if showDetailPanel {
+                onSelect()
+            } else {
+                copyID()
+            }
+        }
         .contextMenu {
             Button("Edit\u{2026}") { onEdit() }
             Button("View Detail") { onShowDetail() }
             Divider()
             Button("Copy ID") { copyID() }
             Button("Copy Title") { copyTitle() }
+            Button("Copy Details as Markdown") { onCopyDetails() }
             Divider()
             Menu("Status") {
                 Button("Claim") { onClaim() }
@@ -201,7 +903,9 @@ struct IssueRow: View {
                 Button("Close") { onClose() }
             }
         }
-        .help("Click to copy ID \u{00B7} Double-click to edit")
+        .help(showDetailPanel
+            ? "Click to select \u{00B7} Double-click to edit"
+            : "Click to copy ID \u{00B7} Double-click to edit")
         .padding(.vertical, 2)
     }
 

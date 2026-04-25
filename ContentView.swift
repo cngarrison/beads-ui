@@ -29,6 +29,7 @@ struct BeadsTrackerApp: App {
 
 struct ContentView: View {
     @SceneStorage("workingDirectory") private var workingDirectory: String = ""
+    @SceneStorage("detailPanelWidth") private var detailPanelWidth: Double = 400
     @AppStorage("recentProjects") private var recentProjectsJSON: String = "[]"
     @State private var showingCreateSheet = false
     @State private var issueRefreshTrigger = 0
@@ -58,7 +59,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             topBar
             Divider()
-            IssueListView(workingDirectory: workingDirectory, refreshTrigger: issueRefreshTrigger)
+            IssueListView(workingDirectory: workingDirectory, refreshTrigger: issueRefreshTrigger, detailPanelWidth: $detailPanelWidth)
         }
         .frame(minWidth: 520, minHeight: 560)
         .onAppear {
