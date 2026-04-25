@@ -506,7 +506,7 @@ struct IssueEditSheet: View {
             .background(.bar)
         }
         .frame(width: max(520, preferredWidth - 80))
-        .frame(minHeight: 540)
+        .frame(minHeight: 540, maxHeight: .infinity)
         .task { await loadDetail() }
     }
 
