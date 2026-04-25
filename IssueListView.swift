@@ -806,7 +806,7 @@ private func inlineMarkdown(_ text: String) -> String {
     s = applyPattern(s, pattern: "__(.+?)__", template: "<strong>$1</strong>")
     // Italic
     s = applyPattern(s, pattern: "\\*([^*]+)\\*", template: "<em>$1</em>")
-    s = applyPattern(s, pattern: "_([^_]+)_", template: "<em>$1</em>")
+    s = applyPattern(s, pattern: "(?<![\\w])_([^_]+)_(?![\\w])", template: "<em>$1</em>")
     // Links
     s = applyPattern(s, pattern: "\\[([^\\]]+)\\]\\(([^)]+)\\)", template: "<a href=\"$2\">$1</a>")
     return s
