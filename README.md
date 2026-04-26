@@ -35,7 +35,7 @@ A native macOS app for creating and viewing issues in the [beads](https://stevey
 
 - macOS 13.0 (Ventura) or later
 - Xcode Command Line Tools (`xcode-select --install`)
-- [`bd`](https://steveyegge.github.io/beads/getting-started/installation) installed and available in your `PATH`
+- [`bd`](https://steveyegge.github.io/beads/getting-started/installation) installed and available in your `PATH` (see [PATH note](#bd-not-found) below)
 - A beads-initialised repository (one with a `.beads/` directory)
 
 For the icon pipeline only:
@@ -111,18 +111,34 @@ Switch to the **Issues** tab. The list loads automatically when you switch tabs 
 
 ---
 
+## `bd` not found
+
+macOS GUI apps launched from the Dock or Finder do not inherit the user's shell `PATH`, so `bd` may not be found even if it works fine in Terminal. The fix is a one-time setup step that tells the OS where Homebrew's binaries live:
+
+```bash
+echo $(brew --prefix)/bin | sudo tee /etc/paths.d/homebrew
+```
+
+Then restart Beads Tracker. If `bd` is still not found, the app will display the exact command to run with the path that applies to your machine (Intel or Apple Silicon).
+
+---
+
 ## Project structure
 
 ```
 beads-tracker/
-├── BeadsTracker.swift  # Entire app — one file
-├── Info.plist          # App bundle metadata
-├── Makefile            # Build + icon pipeline
-├── BeadsTracker.svg    # App icon source
+├── BeadsRunner.swift        # CLI subprocess layer (bd commands)
+├── BeadsTrackerModels.swift # Data models and types
+├── BeadsTrackerApp.swift    # App entry point and main window
+├── CreateIssueView.swift    # Create tab UI
+├── IssueListView.swift      # Issues tab UI
+├── Info.plist               # App bundle metadata
+├── Makefile                 # Build + icon pipeline
+├── BeadsTracker.svg         # App icon source
 └── README.md
 ```
 
-There is no Xcode project, no Swift Package Manager manifest, no third-party dependencies. `swiftc` compiles the single source file directly into an `.app` bundle.
+There is no Xcode project, no Swift Package Manager manifest, no third-party dependencies. `swiftc` compiles all source files directly into an `.app` bundle — the entire build is a single `swiftc` invocation in the `Makefile`.
 
 ---
 
