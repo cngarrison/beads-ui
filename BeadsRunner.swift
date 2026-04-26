@@ -59,8 +59,9 @@ enum BeadsRunner {
 
     private static func listInternal(workingDirectory: String, onProgress: @escaping (Int) -> Void) throws -> [BeadsIssue] {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-l", "-c", "bd list --json --limit 0"]
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["bd", "list", "--json", "--limit", "0"]
+        p.environment = pathHelperEnvironment()
         if !workingDirectory.isEmpty { p.currentDirectoryURL = URL(fileURLWithPath: workingDirectory) }
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
@@ -101,7 +102,10 @@ enum BeadsRunner {
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         if p.terminationStatus != 0 {
-            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            var msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if p.terminationStatus == 127 || msg.contains("command not found") {
+                msg = enrichCommandNotFound(msg)
+            }
             throw BeadsError.commandFailed(msg.isEmpty ? stdout : msg)
         }
         return try buildTree(from: stdout)
@@ -282,13 +286,57 @@ enum BeadsRunner {
 
     // MARK: Process helper
 
+    /// Detects the Homebrew bin directory on this machine (works on both Intel and Apple Silicon).
+    private static func brewBinPath() -> String? {
+        let candidates = ["/opt/homebrew/bin", "/usr/local/bin"]   // Apple Silicon first
+        return candidates.first { FileManager.default.fileExists(atPath: "\($0)/brew") }
+    }
+
+    /// Builds a PATH that includes entries from /etc/paths and /etc/paths.d/*, replicating
+    /// what path_helper does for login shells — without needing to spawn one.
+    private static func pathHelperEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        var dirs: [String] = []
+
+        if let s = try? String(contentsOfFile: "/etc/paths", encoding: .utf8) {
+            dirs += s.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        }
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: "/etc/paths.d") {
+            for f in files.sorted() {
+                if let s = try? String(contentsOfFile: "/etc/paths.d/\(f)", encoding: .utf8) {
+                    dirs += s.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                }
+            }
+        }
+        // Append any PATH already in the environment (lowest priority).
+        dirs += (env["PATH"] ?? "").components(separatedBy: ":").filter { !$0.isEmpty }
+
+        // Deduplicate, preserving order.
+        var seen = Set<String>()
+        env["PATH"] = dirs.filter { seen.insert($0).inserted }.joined(separator: ":")
+        return env
+    }
+
+    /// Wraps a raw stderr/stdout message with setup instructions when `bd` cannot be found.
+    private static func enrichCommandNotFound(_ message: String) -> String {
+        guard message.contains("command not found") || message.contains("No such file or directory") else {
+            return message
+        }
+        let brewBin = brewBinPath() ?? "/opt/homebrew/bin"
+        return """
+        \(message)
+
+        'bd' was not found in PATH. Run this once in Terminal, then restart the app:
+
+          echo '\(brewBin)' | sudo tee /etc/paths.d/homebrew
+        """
+    }
+
     private static func run(_ args: [String], in directory: String) throws -> (String, String, Int32) {
         let p = Process()
-        // Use a login shell so GUI-launched apps (Dock, Finder) inherit the
-        // user's full PATH (e.g. /usr/local/bin where `bd` typically lives).
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        let cmd = args.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''" ) + "'" }.joined(separator: " ")
-        p.arguments = ["-l", "-c", cmd]
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = args
+        p.environment = pathHelperEnvironment()
         if !directory.isEmpty { p.currentDirectoryURL = URL(fileURLWithPath: directory) }
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
@@ -305,7 +353,10 @@ enum BeadsRunner {
         p.waitUntilExit()
         stderrDone.wait()
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        var stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        if p.terminationStatus == 127 || stderr.contains("command not found") {
+            stderr = enrichCommandNotFound(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         return (stdout, stderr, p.terminationStatus)
     }
 }
