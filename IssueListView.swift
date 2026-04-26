@@ -127,7 +127,7 @@ struct IssueListView: View {
             Button {
                 withAnimation { showDetailPanel.toggle() }
             } label: {
-                Label("Toggle Panel", systemImage: "sidebar.right")
+                Label(showDetailPanel ? "Hide Details" : "Show Details", systemImage: "sidebar.right")
             }
             .buttonStyle(.bordered).controlSize(.small)
             .help(showDetailPanel ? "Hide detail panel" : "Show detail panel")
@@ -221,6 +221,19 @@ struct IssueListView: View {
                         .background(Color.accentColor, in: Capsule())
                 }
                 Spacer()
+                Button {
+                    Task { await loadPanelDetails() }
+                } label: {
+                    if panelLoading {
+                        ProgressView().scaleEffect(0.7)
+                    } else {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(panelLoading || selectedIDs.isEmpty)
+                .help("Refresh detail panel")
+
                 if !panelContents.isEmpty && !panelLoading {
                     Button {
                         let markdown = panelContents.map { detailToMarkdown($0) }.joined(separator: "\n\n---\n\n")
