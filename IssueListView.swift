@@ -20,8 +20,19 @@ struct IssueListView: View {
     @State private var detailIssue:  BeadsIssue? = nil
     @State private var editIssue:    BeadsIssue? = nil
 
-    // Multi-select
+    // Persistent state (SceneStorage for per-window persistence across quit/reopen)
+    @SceneStorage("expandedIDsJSON") private var expandedIDsJSON: String = "[]"
+    @SceneStorage("selectedIDsJSON") private var selectedIDsJSON: String = "[]"
+    
+    // Selection state: @State intermediary synced with @SceneStorage
+    // (needed because List selection binding requires the state to be applied AFTER rows render)
     @State private var selectedIDs: Set<String> = []
+    
+    // Expanded state: computed property works fine with DisclosureGroup
+    private var expandedIDs: Set<String> {
+        get { decodeIDSet(expandedIDsJSON) }
+        nonmutating set { expandedIDsJSON = encodeIDSet(newValue) }
+    }
 
     // Copy details toolbar feedback
     @State private var isCopyingDetails = false
@@ -76,7 +87,11 @@ struct IssueListView: View {
         .task { await loadIssues() }
         .onChange(of: workingDirectory) { newDir in Task { await loadIssues(dir: newDir) } }
         .onChange(of: refreshTrigger) { _ in Task { await loadIssues() } }
-        .onChange(of: selectedIDs) { _ in
+        .onChange(of: selectedIDs) { newSelection in
+            // Persist selection to SceneStorage
+            selectedIDsJSON = encodeIDSet(newSelection)
+            
+            // Debounced detail panel update
             detailLoadTask?.cancel()
             detailLoadTask = Task {
                 try? await Task.sleep(nanoseconds: 200_000_000) // 200ms debounce
@@ -170,35 +185,10 @@ struct IssueListView: View {
                        title: "No Issues",
                        message: "This repository has no open issues.")
         } else {
-            List(issues, children: \.children, selection: $selectedIDs) { issue in
-                IssueRow(issue: issue, copiedID: $copiedID,
-                         showDetailPanel: showDetailPanel,
-                         onEdit: { editIssue = issue },
-                         onShowDetail: { detailIssue = issue },
-                         onClaim: { Task { await claimIssue(issue) } },
-                         onClose: { Task { await closeIssue(issue) } },
-                         onCopyDetails: {
-                             let ids: [String]
-                             if selectedIDs.contains(issue.id) {
-                                 ids = Array(selectedIDs)
-                             } else {
-                                 ids = [issue.id]
-                             }
-                             Task { await copyDetailsAsMarkdown(ids: ids) }
-                         },
-                         onSelect: {
-                             let cmdHeld = NSEvent.modifierFlags.contains(.command)
-                             if cmdHeld {
-                                 if selectedIDs.contains(issue.id) {
-                                     selectedIDs.remove(issue.id)
-                                 } else {
-                                     selectedIDs.insert(issue.id)
-                                 }
-                             } else {
-                                 selectedIDs = [issue.id]
-                             }
-                             listFocused = true
-                         })
+            List(selection: $selectedIDs) {
+                ForEach(issues) { issue in
+                    issueRowRecursive(issue)
+                }
             }
             .listStyle(.plain)
             .focused($listFocused)
@@ -419,10 +409,121 @@ struct IssueListView: View {
         for await count in progressStream { loadingCount = count }
         do {
             issues = try await bgTask.value
+            // Clean up persisted state: remove IDs that no longer exist
+            let validIDs = allIssueIDs(in: issues)
+            
+            // Restore selection from SceneStorage (after issues are loaded)
+            let restoredSelection = decodeIDSet(selectedIDsJSON).intersection(validIDs)
+            selectedIDs = restoredSelection
+            
+            // Clean up expanded IDs
+            expandedIDs = expandedIDs.intersection(validIDs)
+            
+            // Persist cleaned selection back to SceneStorage
+            selectedIDsJSON = encodeIDSet(selectedIDs)
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+    
+    // MARK: - Recursive Issue Row Rendering
+    
+    private func issueRowRecursive(_ issue: BeadsIssue) -> AnyView {
+        if let children = issue.children, !children.isEmpty {
+            return AnyView(
+                DisclosureGroup(
+                    isExpanded: Binding(
+                        get: { expandedIDs.contains(issue.id) },
+                        set: { isExpanded in
+                            if isExpanded {
+                                expandedIDs.insert(issue.id)
+                            } else {
+                                expandedIDs.remove(issue.id)
+                            }
+                        }
+                    )
+                ) {
+                    ForEach(children) { child in
+                        issueRowRecursive(child)
+                    }
+                } label: {
+                    issueRowContent(issue)
+                }
+            )
+        } else {
+            return AnyView(issueRowContent(issue))
+        }
+    }
+    
+    @ViewBuilder
+    private func issueRowContent(_ issue: BeadsIssue) -> some View {
+        IssueRow(issue: issue, copiedID: $copiedID,
+                 showDetailPanel: showDetailPanel,
+                 onEdit: { editIssue = issue },
+                 onShowDetail: { detailIssue = issue },
+                 onClaim: { Task { await claimIssue(issue) } },
+                 onClose: { Task { await closeIssue(issue) } },
+                 onCopyDetails: {
+                     let ids: [String]
+                     if selectedIDs.contains(issue.id) {
+                         ids = Array(selectedIDs)
+                     } else {
+                         ids = [issue.id]
+                     }
+                     Task { await copyDetailsAsMarkdown(ids: ids) }
+                 },
+                 onSelect: {
+                     let cmdHeld = NSEvent.modifierFlags.contains(.command)
+                     if cmdHeld {
+                         if selectedIDs.contains(issue.id) {
+                             var newSelection = selectedIDs
+                             if newSelection.contains(issue.id) {
+                                 newSelection.remove(issue.id)
+                             } else {
+                                 newSelection.insert(issue.id)
+                             }
+                             selectedIDs = newSelection
+                         } else {
+                             selectedIDs.remove(issue.id)
+                         }
+                     } else {
+                         selectedIDs = [issue.id]
+                     }
+                     listFocused = true
+                 })
+    }
+    
+    // MARK: - SceneStorage Helpers
+    
+    private func encodeIDSet(_ set: Set<String>) -> String {
+        guard let data = try? JSONEncoder().encode(Array(set)),
+              let json = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return json
+    }
+    
+    private func decodeIDSet(_ json: String) -> Set<String> {
+        guard let data = json.data(using: .utf8),
+              let array = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return Set(array)
+    }
+    
+    private func allIssueIDs(in list: [BeadsIssue]) -> Set<String> {
+        var ids = Set<String>()
+        func walk(_ items: [BeadsIssue]) {
+            for issue in items {
+                ids.insert(issue.id)
+                if let children = issue.children {
+                    walk(children)
+                }
+            }
+        }
+        walk(list)
+        return ids
     }
 }
 
